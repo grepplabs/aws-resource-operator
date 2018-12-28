@@ -2,6 +2,9 @@
 # Image URL to use all building/pushing image targets
 IMG ?= controller:latest
 
+VERSION       ?= $(shell git describe --tags --always --dirty)
+LDFLAGS       ?= -X github.com/grepplabs/aws-resource-operator/pkg/version.Version=$(VERSION) -w -s
+
 all: test manager
 
 # Run tests
@@ -10,7 +13,7 @@ test: generate fmt vet manifests
 
 # Build manager binary
 manager: generate fmt vet
-	go build -o bin/manager github.com/grepplabs/aws-resource-operator/cmd/manager
+	go build -o bin/manager -ldflags "$(LDFLAGS)" github.com/grepplabs/aws-resource-operator/cmd/manager
 
 # Run against the configured Kubernetes cluster in ~/.kube/config
 run: generate fmt vet

@@ -17,6 +17,7 @@ package s3bucket
 
 import (
 	"context"
+	"github.com/grepplabs/aws-resource-operator/pkg/aws"
 	"reflect"
 
 	awsv1beta1 "github.com/grepplabs/aws-resource-operator/pkg/apis/aws/v1beta1"
@@ -51,7 +52,10 @@ func Add(mgr manager.Manager) error {
 
 // newReconciler returns a new reconcile.Reconciler
 func newReconciler(mgr manager.Manager) reconcile.Reconciler {
-	return &ReconcileS3Bucket{Client: mgr.GetClient(), scheme: mgr.GetScheme()}
+	return &ReconcileS3Bucket{
+		Client:    mgr.GetClient(),
+		scheme:    mgr.GetScheme(),
+		awsClient: aws.GetAWSClient()}
 }
 
 // add adds a new Controller to mgr with r as the reconcile.Reconciler
@@ -86,7 +90,8 @@ var _ reconcile.Reconciler = &ReconcileS3Bucket{}
 // ReconcileS3Bucket reconciles a S3Bucket object
 type ReconcileS3Bucket struct {
 	client.Client
-	scheme *runtime.Scheme
+	scheme    *runtime.Scheme
+	awsClient *aws.AWSClient
 }
 
 // Reconcile reads that state of the cluster for a S3Bucket object and makes changes based on the state read
