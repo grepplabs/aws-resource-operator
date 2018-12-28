@@ -1,0 +1,3 @@
+version: "1"
+domain: grepplabs.com
+repo: github.com/grepplabs/aws-resource-operator
