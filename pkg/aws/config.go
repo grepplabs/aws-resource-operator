@@ -66,6 +66,22 @@ type AWSClient struct {
 	s3controlconn *s3control.S3Control
 }
 
+func (c *AWSClient) S3() *s3.S3 {
+	return c.s3conn
+}
+
+func (c *AWSClient) Partition() string {
+	return c.partition
+}
+
+func (c *AWSClient) Region() string {
+	return c.region
+}
+
+func (c *AWSClient) Account() string {
+	return c.accountid
+}
+
 // Client configures and returns a fully initialized AWSClient
 func (c *Config) Client() (*AWSClient, error) {
 	// Get the auth and region. This can fail if keys/regions were not
@@ -294,7 +310,7 @@ var addOperatorVersionToUserAgent = request.NamedHandler{
 var debugAuthFailure = request.NamedHandler{
 	Name: "aws-resource-operator.AuthFailureAdditionalDebugHandler",
 	Fn: func(req *request.Request) {
-		if isAWSErr(req.Error, "AuthFailure", "AWS was not able to validate the provided access credentials") {
+		if IsAWSErr(req.Error, "AuthFailure", "AWS was not able to validate the provided access credentials") {
 			log.Info("[DEBUG] Additional AuthFailure Debugging Context")
 			logInfof("[DEBUG] Current system UTC time: %s", time.Now().UTC())
 			logInfof("[DEBUG] Request object: %s", spew.Sdump(req))

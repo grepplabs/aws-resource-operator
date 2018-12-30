@@ -24,14 +24,54 @@ import (
 
 // S3BucketSpec defines the desired state of S3Bucket
 type S3BucketSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
+	// The name of the bucket
+	Bucket string `json:"bucket"`
+	// The region to use. Overrides config/env settings
+	// +optional
+	Region string `json:"region,omitempty"`
+	// The canned ACL to apply. Defaults to "private"
+	// +optional
+	Acl string `json:"acl,omitempty"`
+	// A valid bucket policy JSON document
+	// +optional
+	Policy string `json:"policy,omitempty"`
+	// A mapping of tags to assign to the bucket
+	// +optional
+	Tags map[string]string `json:"tags,omitempty"`
+	// The bucket delete strategy. Defaults to "Delete"
+	// +optional
+	DeleteStrategy DeleteStrategyType `json:"destroyStrategy,omitempty"`
+	// The bucket ownership strategy. Defaults to "Created"
+	// +optional
+	OwnershipStrategy OwnershipStrategyType `json:"ownershipStrategy,omitempty"`
 }
+
+type DeleteStrategyType string
+
+const (
+	// Delete the bucket
+	DeleteDeleteStrategy DeleteStrategyType = "Delete"
+	// Skip bucket deletion
+	SkipDeleteStrategy DeleteStrategyType = "Skip"
+	// All objects should be deleted from the bucket so that the bucket can be deleted without error
+	ForceDeleteStrategy DeleteStrategyType = "Force"
+)
+
+type OwnershipStrategyType string
+
+const (
+	// Only buckets created by the operator are reconciled
+	CreatedOwnershipStrategy OwnershipStrategyType = "Created"
+	// The operator can reconcile existing buckets
+	AcquireOwnershipStrategy OwnershipStrategyType = "Acquire"
+)
 
 // S3BucketStatus defines the observed state of S3Bucket
 type S3BucketStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
+	// The ARN of the S3 bucket
+	ARN string `json:"arn,omitempty"`
+	// The location contraint of S3 bucket
+	LocationConstraint string `json:"locationConstraint,omitempty"`
 }
 
 // +genclient

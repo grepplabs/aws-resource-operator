@@ -27,8 +27,39 @@ spec:
         metadata:
           type: object
         spec:
+          properties:
+            acl:
+              description: The canned ACL to apply. Defaults to "private"
+              type: string
+            bucket:
+              description: The name of the bucket
+              type: string
+            destroyStrategy:
+              description: The bucket delete strategy. Defaults to "Delete"
+              type: string
+            ownershipStrategy:
+              description: The bucket ownership strategy. Defaults to "Created"
+              type: string
+            policy:
+              description: A valid bucket policy JSON document
+              type: string
+            region:
+              description: The region to use. Overrides config/env settings
+              type: string
+            tags:
+              description: A mapping of tags to assign to the bucket
+              type: object
+          required:
+          - bucket
           type: object
         status:
+          properties:
+            arn:
+              description: The ARN of the S3 bucket
+              type: string
+            locationConstraint:
+              description: The location contraint of S3 bucket
+              type: string
           type: object
   version: v1beta1
 status:

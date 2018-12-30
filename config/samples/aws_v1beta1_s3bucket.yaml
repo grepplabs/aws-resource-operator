@@ -6,4 +6,6 @@ metadata:
   name: s3bucket-sample
 spec:
   # Add fields here
-  foo: bar
+  bucket: fm-new-aws-operator-bucket2
+  deleteStrategy: Delete
+  ownershipStrategy: Created

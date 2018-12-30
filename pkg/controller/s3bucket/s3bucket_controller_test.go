@@ -16,13 +16,15 @@ limitations under the License.
 package s3bucket
 
 import (
+	"errors"
+	"fmt"
+	"github.com/stretchr/testify/assert"
 	"testing"
 	"time"
 
 	awsv1beta1 "github.com/grepplabs/aws-resource-operator/pkg/apis/aws/v1beta1"
 	"github.com/onsi/gomega"
 	"golang.org/x/net/context"
-	appsv1 "k8s.io/api/apps/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -70,6 +72,7 @@ func TestReconcile(t *testing.T) {
 	defer c.Delete(context.TODO(), instance)
 	g.Eventually(requests, timeout).Should(gomega.Receive(gomega.Equal(expectedRequest)))
 
+	/** TODO:
 	deploy := &appsv1.Deployment{}
 	g.Eventually(func() error { return c.Get(context.TODO(), depKey, deploy) }, timeout).
 		Should(gomega.Succeed())
@@ -82,5 +85,21 @@ func TestReconcile(t *testing.T) {
 
 	// Manually delete Deployment since GC isn't enabled in the test control plane
 	g.Expect(c.Delete(context.TODO(), deploy)).To(gomega.Succeed())
+	*/
+}
 
+func TestEventMessageFromError(t *testing.T) {
+	a := assert.New(t)
+	a.Equal("Reconcile failed",
+		eventMessageFromError(errors.New("")))
+	a.Equal("error reading S3 Bucket (bar): BucketRegionError: incorrect region, the bucket is not in 'eu-central-1' region",
+		eventMessageFromError(errors.New("error reading S3 Bucket (bar): BucketRegionError: incorrect region, the bucket is not in 'eu-central-1' region\n\tstatus code: 301, request id: , host id: ")))
+	a.Equal("error reading S3 Bucket (bar): BucketRegionError: incorrect region, the bucket is not in 'eu-central-1' region",
+		eventMessageFromError(errors.New(`error reading S3 Bucket (bar): BucketRegionError: incorrect region, the bucket is not in 'eu-central-1' region\n\tstatus code: 301, request id: , host id: `)))
+	a.Equal("error reading S3 Bucket (s3://bar): BadRequest: Bad Request",
+		eventMessageFromError(errors.New(fmt.Sprintf("%s", "error reading S3 Bucket (s3://bar): BadRequest: Bad Request\n\tstatus code: 400, request id: 02F83228BF1D6082, host id: N4qlRz2PYekN1kk5kY5DvjiCiV46lKxpyWXNQ10MZl3InmKtjXeMyuyvlKeOEqc/F1EOQpIg+hQ="))))
+	a.Equal("Reconcile failed",
+		eventMessageFromError(errors.New("any message")))
+	a.Equal("Reconcile failed",
+		eventMessageFromError(errors.New("\n\tstatus code: 301, request id: , host id: ")))
 }

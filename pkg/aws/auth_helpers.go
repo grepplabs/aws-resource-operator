@@ -81,13 +81,13 @@ func GetAccountIDAndPartitionFromIAMGetUser(iamconn *iam.IAM) (string, string, e
 	if err != nil {
 		// AccessDenied and ValidationError can be raised
 		// if credentials belong to federated profile, so we ignore these
-		if isAWSErr(err, "AccessDenied", "") {
+		if IsAWSErr(err, "AccessDenied", "") {
 			return "", "", nil
 		}
-		if isAWSErr(err, "InvalidClientTokenId", "") {
+		if IsAWSErr(err, "InvalidClientTokenId", "") {
 			return "", "", nil
 		}
-		if isAWSErr(err, "ValidationError", "") {
+		if IsAWSErr(err, "ValidationError", "") {
 			return "", "", nil
 		}
 		err = fmt.Errorf("failed getting account information via iam:GetUser: %s", err)

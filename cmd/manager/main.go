@@ -46,17 +46,20 @@ var (
 	leaderElectionNamespace = flag.String("leader-election-namespace", "", "Namespace in which the leader election configmap will be created")
 	metricsAddr             = flag.String("metrics-addr", ":8080", "TCP address that the controller should bind to for serving prometheus metrics")
 	syncPeriod              = flag.Duration("sync-period", 5*time.Minute, "Reconcile sync period")
-	jsonLogger              = flag.Bool("json-logger", false, "Use json logger (production)")
+
+	logLevel           = flag.String("log-level", "info", "Only log messages with the given severity or above. One of: [debug, info, warn, error, panic, fatal]")
+	logJson            = flag.Bool("log-json", false, "Use json logger (production)")
+	logStacktraceLevel = flag.String("log-stacktrace-level", "panic", "Record a stack trace for all messages at or above a given level. One of: [debug, info, warn, error, panic, fatal]")
 )
 
 func main() {
 	// Setup flags
-	_ = goflag.Lookup("logtostderr").Value.Set("true")
+	_ = goflag.Set("logtostderr", "true")
 	flag.CommandLine.AddFlagSet(opflags.FlagSet)
 	flag.CommandLine.AddGoFlagSet(goflag.CommandLine)
 	flag.Parse()
 
-	logf.SetLogger(GetLogger(!*jsonLogger))
+	logf.SetLogger(GetLogger())
 	log := logf.Log.WithName("entrypoint")
 
 	// Print version
@@ -117,7 +120,20 @@ func main() {
 	}
 }
 
-func GetLogger(development bool) logr.Logger {
+func GetLogger() logr.Logger {
+	development := !*logJson
+
+	levelAt := zapcore.InfoLevel
+	err := levelAt.Set(*logLevel)
+	if err != nil {
+		panic(err)
+	}
+	levelStacktrace := zapcore.PanicLevel
+	err = levelStacktrace.Set(*logStacktraceLevel)
+	if err != nil {
+		panic(err)
+	}
+
 	sink := zapcore.AddSync(os.Stderr)
 
 	var enc zapcore.Encoder
@@ -126,8 +142,8 @@ func GetLogger(development bool) logr.Logger {
 	if development {
 		encCfg := zap.NewDevelopmentEncoderConfig()
 		enc = zapcore.NewConsoleEncoder(encCfg)
-		lvl = zap.NewAtomicLevelAt(zap.DebugLevel)
-		opts = append(opts, zap.Development(), zap.AddStacktrace(zap.ErrorLevel))
+		lvl = zap.NewAtomicLevelAt(levelAt)
+		opts = append(opts, zap.Development(), zap.AddStacktrace(levelStacktrace))
 	} else {
 		encCfg := zap.NewProductionEncoderConfig()
 		encCfg.TimeKey = "@timestamp"
@@ -135,8 +151,8 @@ func GetLogger(development bool) logr.Logger {
 			enc.AppendString(t.Format("2006-01-02T15:04:05.000Z"))
 		}
 		enc = zapcore.NewJSONEncoder(encCfg)
-		lvl = zap.NewAtomicLevelAt(zap.InfoLevel)
-		opts = append(opts, zap.AddStacktrace(zap.WarnLevel),
+		lvl = zap.NewAtomicLevelAt(levelAt)
+		opts = append(opts, zap.AddStacktrace(levelStacktrace),
 			zap.WrapCore(func(core zapcore.Core) zapcore.Core {
 				return zapcore.NewSampler(core, time.Second, 100, 100)
 			}))
