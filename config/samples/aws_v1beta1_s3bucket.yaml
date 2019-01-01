@@ -7,5 +7,6 @@ metadata:
 spec:
   # Add fields here
   bucket: fm-new-aws-operator-bucket2
+  region: eu-central-1
   deleteStrategy: Delete
   ownershipStrategy: Created

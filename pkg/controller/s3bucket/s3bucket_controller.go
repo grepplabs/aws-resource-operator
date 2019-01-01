@@ -27,6 +27,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3"
 	awsv1beta1 "github.com/grepplabs/aws-resource-operator/pkg/apis/aws/v1beta1"
 	awsclient "github.com/grepplabs/aws-resource-operator/pkg/aws"
+	"github.com/grepplabs/aws-resource-operator/pkg/helper/structure"
 	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -40,10 +41,15 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/source"
 )
 
-var log = logf.Log.WithName("s3bucket-controller")
+const (
+	deleteBucketFinalizerName = "delete-bucket.finalizers.aws.grepplabs.com"
+)
 
-// extra pattern from s3err/error.go
-var s3ErrorPattern = regexp.MustCompile(`(?m:status code: .*, request id: .*, host id: .*)`)
+var (
+	log = logf.Log.WithName("s3bucket-controller")
+	// extra pattern from s3err/error.go
+	s3ErrorPattern = regexp.MustCompile(`(?m:status code: .*, request id: .*, host id: .*)`)
+)
 
 /**
 * USER ACTION REQUIRED: This is a scaffold file intended for the user to modify with their own Controller
@@ -118,7 +124,7 @@ func (r *ReconcileS3Bucket) Reconcile(request reconcile.Request) (reconcile.Resu
 	if instance.ObjectMeta.DeletionTimestamp.IsZero() {
 		// The object is not being deleted, so if it does not have our finalizer,
 		// then lets add the finalizer and update the object.
-		if !containsString(instance.ObjectMeta.Finalizers, deleteBucketFinalizerName) {
+		if !structure.ContainsString(instance.ObjectMeta.Finalizers, deleteBucketFinalizerName) {
 			instance.ObjectMeta.Finalizers = append(instance.ObjectMeta.Finalizers, deleteBucketFinalizerName)
 			if err := r.Update(context.Background(), instance); err != nil {
 				return reconcile.Result{Requeue: true}, nil
@@ -126,7 +132,7 @@ func (r *ReconcileS3Bucket) Reconcile(request reconcile.Request) (reconcile.Resu
 		}
 	} else {
 		// The object is being deleted
-		if containsString(instance.ObjectMeta.Finalizers, deleteBucketFinalizerName) {
+		if structure.ContainsString(instance.ObjectMeta.Finalizers, deleteBucketFinalizerName) {
 			// our finalizer is present, so lets handle our external dependency
 			if err := r.deleteBucket(instance); err != nil {
 				// if fail to delete the external dependency here, return with error
@@ -135,7 +141,7 @@ func (r *ReconcileS3Bucket) Reconcile(request reconcile.Request) (reconcile.Resu
 			}
 
 			// remove our finalizer from the list and update it.
-			instance.ObjectMeta.Finalizers = removeString(instance.ObjectMeta.Finalizers, deleteBucketFinalizerName)
+			instance.ObjectMeta.Finalizers = structure.RemoveString(instance.ObjectMeta.Finalizers, deleteBucketFinalizerName)
 			if err := r.Update(context.Background(), instance); err != nil {
 				return reconcile.Result{Requeue: true}, nil
 			}
@@ -145,19 +151,23 @@ func (r *ReconcileS3Bucket) Reconcile(request reconcile.Request) (reconcile.Resu
 	}
 
 	// Validate parameters before reconcile
-	err = r.validateInstance(instance)
+	retryError := r.validateInstance(instance)
 	if err != nil {
-		return reconcile.Result{}, err
+		return r.handleRetryError(instance, retryError)
 	}
 
-	retryError := r.reconcileInstance(request, instance)
+	retryError = r.reconcileInstance(request, instance)
 	if retryError != nil {
-		if retryError.Reason != "" {
-			r.sendEvent(instance, apiv1.EventTypeWarning, retryError.Reason, eventMessageFromError(retryError.Err))
-		}
-		return reconcile.Result{Requeue: retryError.Retryable}, retryError.Err
+		return r.handleRetryError(instance, retryError)
 	}
 	return reconcile.Result{}, nil
+}
+
+func (r *ReconcileS3Bucket) handleRetryError(instance *awsv1beta1.S3Bucket, retryError *awsclient.RetryError) (reconcile.Result, error) {
+	if retryError.Reason != "" {
+		r.sendEvent(instance, apiv1.EventTypeWarning, retryError.Reason, eventMessageFromError(retryError.Err))
+	}
+	return reconcile.Result{Requeue: retryError.Retryable}, retryError.Err
 }
 
 func eventMessageFromError(err error) string {
@@ -173,19 +183,24 @@ func eventMessageFromError(err error) string {
 	return "Reconcile failed"
 }
 
-func (r *ReconcileS3Bucket) validateInstance(instance *awsv1beta1.S3Bucket) error {
+func (r *ReconcileS3Bucket) validateInstance(instance *awsv1beta1.S3Bucket) *awsclient.RetryError {
 	bucket := instance.Spec.Bucket
 
 	if bucket == "" {
-		return fmt.Errorf("Spec.Bucket is empty")
+		return awsclient.NonRetryableError(fmt.Errorf("bucket name is empty"), "BucketNameEmpty")
 	}
 	if instance.Status.ARN != "" {
 		bucketARN := r.bucketARN(instance)
 		if instance.Status.ARN != bucketARN {
-			return fmt.Errorf("Spec.Bucket cannot be changed. ARNs: %s , %s", instance.Status.ARN, bucketARN)
+			return awsclient.NonRetryableError(fmt.Errorf("bucket name changed"), "BucketNameChanged")
 		}
 	}
-	//TODO: region cannot be changed (WARNING only)
+	if instance.Status.LocationConstraint != "" {
+		bucketRegion := r.bucketRegion(instance)
+		if instance.Status.LocationConstraint != bucketRegion {
+			return awsclient.NonRetryableError(fmt.Errorf("bucket region changed"), "BucketRegionChanged")
+		}
+	}
 	return nil
 }
 
@@ -203,35 +218,38 @@ func (r *ReconcileS3Bucket) bucketRegion(instance *awsv1beta1.S3Bucket) string {
 	}
 	return r.awsClient.Region()
 }
+func (r *ReconcileS3Bucket) bucketAcl(instance *awsv1beta1.S3Bucket) string {
+	if instance.Spec.Acl != "" {
+		return instance.Spec.Acl
+	}
+	return "private"
+}
 
 func (r *ReconcileS3Bucket) reconcileInstance(request reconcile.Request, instance *awsv1beta1.S3Bucket) *awsclient.RetryError {
 	log.Info("Reconcile S3 bucket", "bucket", instance.Spec.Bucket, "name", instance.Name)
 
-	currentSpec, err := r.readBucket(instance)
-	if err != nil {
-		return err
+	bucketExists, retryError := r.checkBucketExists(instance)
+	if retryError != nil {
+		return retryError
 	}
-	if currentSpec == nil {
-		currentSpec, err = r.createBucket(instance)
-		if err != nil {
-			return err
+	if !bucketExists {
+		if retryError = r.createBucket(instance); retryError != nil {
+			return retryError
 		}
 	}
 
 	// check created by operator
 	if instance.Status.ARN == "" {
 		if strings.EqualFold(string(instance.Spec.OwnershipStrategy), string(awsv1beta1.AcquireOwnershipStrategy)) {
-			if retryError := r.acquireBucketOwnership(instance); retryError != nil {
+			if retryError = r.acquireBucketOwnership(instance); retryError != nil {
 				return retryError
 			}
 		} else {
 			log.Info("[WARN] Cannot reconcile not own S3 bucket", "ownershipStrategy", instance.Spec.OwnershipStrategy)
 			return awsclient.NonRetryableError(fmt.Errorf("cannot reconcile not own S3 bucket, use ownershipStrategy '%s' to force bucket management", awsv1beta1.AcquireOwnershipStrategy), "BucketNotOwned")
 		}
-		//TODO: can manage not owned (acquire)?
-		//TODO: if yes update Status.ARN and Location
 	}
-	return nil
+	return r.reconcileBucket(instance)
 }
 
 func (r *ReconcileS3Bucket) acquireBucketOwnership(instance *awsv1beta1.S3Bucket) *awsclient.RetryError {
@@ -273,50 +291,157 @@ func (r *ReconcileS3Bucket) acquireBucketOwnership(instance *awsv1beta1.S3Bucket
 	return nil
 }
 
-func (r *ReconcileS3Bucket) readBucket(instance *awsv1beta1.S3Bucket) (*awsv1beta1.S3BucketSpec, *awsclient.RetryError) {
-	s3conn := r.awsClient.S3()
+func (r *ReconcileS3Bucket) checkBucketExists(instance *awsv1beta1.S3Bucket) (bool, *awsclient.RetryError) {
 	bucket := instance.Spec.Bucket
-
 	// check bucket exists
-	_, err := s3conn.HeadBucket(&s3.HeadBucketInput{
+	_, err := r.awsClient.S3().HeadBucket(&s3.HeadBucketInput{
 		Bucket: aws.String(bucket),
 	})
 	if err != nil {
 		if awsclient.IsAWSCode(err, []string{s3.ErrCodeNoSuchBucket}) {
-			return nil, awsclient.RetryableError(err, "HeadBucketFailed")
+			return false, awsclient.RetryableError(err, "HeadBucketFailed")
 		}
 		if awsError, ok := err.(awserr.RequestFailure); ok && awsError.StatusCode() == 404 {
 			log.Info("S3 Bucket not found", "bucket", bucket)
-			return nil, nil
+			return false, nil
 		}
-		return nil, awsclient.NonRetryableError(fmt.Errorf("error reading S3 Bucket (%s): %s", bucket, err), "HeadBucketFailed")
+		return false, awsclient.NonRetryableError(fmt.Errorf("error reading S3 Bucket (%s): %s", bucket, err), "HeadBucketFailed")
 	}
-	result := &awsv1beta1.S3BucketSpec{
-		Bucket: bucket,
-	}
-
-	// read policy
-	/*
-		policyOutput, err := s3conn.GetBucketPolicy(&s3.GetBucketPolicyInput{
-			Bucket: aws.String(bucket),
-		})
-	*/
-
-	return result, nil
+	return true, nil
 }
 
-func (r *ReconcileS3Bucket) createBucket(instance *awsv1beta1.S3Bucket) (*awsv1beta1.S3BucketSpec, *awsclient.RetryError) {
+func (r *ReconcileS3Bucket) reconcileBucket(instance *awsv1beta1.S3Bucket) *awsclient.RetryError {
+	if err := r.reconcileBucketPolicy(instance); err != nil {
+		return err
+	}
+	if err := r.reconcileBucketAcl(instance); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (r *ReconcileS3Bucket) reconcileBucketAcl(instance *awsv1beta1.S3Bucket) *awsclient.RetryError {
+	bucket := instance.Spec.Bucket
+	desiredAcl := r.bucketAcl(instance)
+	currentAcl := instance.Status.Acl
+	// this is based on the status and not a value read from AWS
+	if desiredAcl != currentAcl {
+		logInfof("Changing bucket canned ACL (%s): '%s'", bucket, desiredAcl)
+
+		_, err := r.awsClient.S3().PutBucketAcl(&s3.PutBucketAclInput{
+			Bucket: aws.String(bucket),
+			ACL:    aws.String(desiredAcl),
+		})
+		if err != nil {
+			if awsclient.IsAWSCode(err, []string{s3.ErrCodeNoSuchBucket}) {
+				return awsclient.RetryableError(err, "PutBucketAclFailed")
+			}
+			return awsclient.NonRetryableError(fmt.Errorf("error setting S3 Bucket canned ACL (%s): %s", bucket, err), "PutBucketAclFailed")
+		}
+		r.sendEvent(instance, apiv1.EventTypeNormal, "PutBucketAcl", "Bucket canned ACL changed to %s", desiredAcl)
+
+		instance.Status.Acl = desiredAcl
+		return r.updateInstance(instance)
+
+	}
+	return nil
+}
+
+func (r *ReconcileS3Bucket) reconcileBucketPolicy(instance *awsv1beta1.S3Bucket) *awsclient.RetryError {
+	bucket := instance.Spec.Bucket
+
+	// current policy is already normalized
+	currentPolicy, retryError := r.readyBucketPolicy(bucket)
+	if retryError != nil {
+		return retryError
+	}
+	desiredPolicy := instance.Spec.Policy
+	if desiredPolicy != "" {
+		var err error
+		desiredPolicy, err = structure.NormalizeJsonString(desiredPolicy)
+		if err != nil {
+			return awsclient.NonRetryableError(fmt.Errorf("error normalizing policy S3 Bucket (%s): %s", bucket, err), "NormalizeJsonBucketPolicyFailed")
+		}
+	}
+	if currentPolicy == desiredPolicy {
+		// no update
+		return nil
+	}
+	return r.updateBucketPolicy(instance)
+}
+
+func (r *ReconcileS3Bucket) readyBucketPolicy(bucket string) (string, *awsclient.RetryError) {
+	// read policy
+	getBucketPolicyInputOutput, err := r.awsClient.S3().GetBucketPolicy(&s3.GetBucketPolicyInput{
+		Bucket: aws.String(bucket),
+	})
+	if err != nil {
+		if awsclient.IsAWSCode(err, []string{s3.ErrCodeNoSuchBucket}) {
+			return "", awsclient.RetryableError(err, "GetBucketPolicyFailed")
+		}
+		if awsError, ok := err.(awserr.RequestFailure); ok && awsError.StatusCode() == 404 {
+			return "", nil
+		}
+		return "", awsclient.NonRetryableError(fmt.Errorf("error reading S3 Bucket policy (%s): %s", bucket, err), "GetBucketPolicyFailed")
+	}
+	if getBucketPolicyInputOutput != nil && getBucketPolicyInputOutput.Policy != nil {
+		policy := *getBucketPolicyInputOutput.Policy
+		if policy != "" {
+			policy, err = structure.NormalizeJsonString(policy)
+			if err != nil {
+				logInfof("[WARN] error normalizing S3 read policy (%s): %s)", bucket, err)
+			}
+		}
+		return policy, nil
+	}
+	return "", nil
+}
+
+func (r *ReconcileS3Bucket) updateBucketPolicy(instance *awsv1beta1.S3Bucket) *awsclient.RetryError {
+	bucket := instance.Spec.Bucket
+	desiredPolicy := strings.TrimSpace(instance.Spec.Policy)
+	if desiredPolicy != "" {
+		logInfof("Updating bucket policy (%s):\n%s", bucket, desiredPolicy)
+		_, err := r.awsClient.S3().PutBucketPolicy(&s3.PutBucketPolicyInput{
+			Bucket: aws.String(bucket),
+			Policy: aws.String(desiredPolicy)})
+
+		if err != nil {
+			if awsclient.IsAWSCode(err, []string{s3.ErrCodeNoSuchBucket}) {
+				return awsclient.RetryableError(err, "PutBucketPolicyFailed")
+			}
+			return awsclient.NonRetryableError(fmt.Errorf("error update S3 Bucket policy (%s): %s", bucket, err), "PutBucketPolicyFailed")
+		}
+		r.sendEvent(instance, apiv1.EventTypeNormal, "PutBucketPolicy", "Bucket policy changed")
+	} else {
+		log.Info("Deleting bucket policy", "bucket", bucket)
+		_, err := r.awsClient.S3().DeleteBucketPolicy(&s3.DeleteBucketPolicyInput{
+			Bucket: aws.String(bucket),
+		})
+		if err != nil {
+			if awsclient.IsAWSCode(err, []string{s3.ErrCodeNoSuchBucket}) {
+				return awsclient.RetryableError(err, "DeleteBucketPolicyFailed")
+			}
+			return awsclient.NonRetryableError(fmt.Errorf("error delete S3 Bucket policy (%s): %s", bucket, err), "DeleteBucketPolicyFailed")
+		}
+		r.sendEvent(instance, apiv1.EventTypeNormal, "DeleteBucketPolicy", "Bucket policy deleted")
+	}
+	return nil
+}
+
+func (r *ReconcileS3Bucket) createBucket(instance *awsv1beta1.S3Bucket) *awsclient.RetryError {
 	s3conn := r.awsClient.S3()
 
 	bucket := instance.Spec.Bucket
 	bucketArn := r.bucketARN(instance)
 	locationConstraint := r.bucketRegion(instance)
+	bucketAcl := r.bucketAcl(instance)
 
 	// create bucket
 	log.Info("Creating S3 bucket", "bucket", bucket, "locationConstraint", locationConstraint)
 	_, err := s3conn.CreateBucket(&s3.CreateBucketInput{
 		Bucket: aws.String(bucket),
-		ACL:    aws.String(instance.Spec.Acl),
+		ACL:    aws.String(bucketAcl),
 		CreateBucketConfiguration: &s3.CreateBucketConfiguration{
 			LocationConstraint: aws.String(locationConstraint),
 		},
@@ -324,9 +449,9 @@ func (r *ReconcileS3Bucket) createBucket(instance *awsv1beta1.S3Bucket) (*awsv1b
 	if err != nil {
 		if awsclient.IsAWSCode(err, []string{"OperationAborted"}) {
 			log.Error(err, "[WARN] Got an error while trying to create S3 bucket", "bucket", bucket)
-			return nil, awsclient.RetryableError(fmt.Errorf("error creating S3 Bucket (%s): %s", bucket, err), "CreateBucketFailed")
+			return awsclient.RetryableError(fmt.Errorf("error creating S3 Bucket (%s): %s", bucket, err), "CreateBucketFailed")
 		}
-		return nil, awsclient.NonRetryableError(err, "CreateBucketFailed")
+		return awsclient.NonRetryableError(err, "CreateBucketFailed")
 	}
 	r.sendEvent(instance, apiv1.EventTypeNormal, "BucketCreated", "Successfully created S3 bucket %s", bucketArn)
 
@@ -335,16 +460,12 @@ func (r *ReconcileS3Bucket) createBucket(instance *awsv1beta1.S3Bucket) (*awsv1b
 
 	instance.Status.LocationConstraint = r.bucketRegion(instance)
 	instance.Status.ARN = bucketArn
+	instance.Status.Acl = bucketAcl
 
 	if retryError := r.updateInstance(instance); retryError != nil {
-		return nil, retryError
+		return retryError
 	}
-
-	return &awsv1beta1.S3BucketSpec{
-		Bucket: instance.Spec.Bucket,
-		Region: instance.Spec.Region,
-		Acl:    instance.Spec.Acl,
-	}, nil
+	return nil
 }
 
 func (r *ReconcileS3Bucket) sendEvent(instance *awsv1beta1.S3Bucket, eventType, reason, messageFmt string, args ...interface{}) {
@@ -393,4 +514,8 @@ func (r *ReconcileS3Bucket) deleteBucket(instance *awsv1beta1.S3Bucket) error {
 
 	}
 	return err
+}
+
+func logInfof(format string, a ...interface{}) {
+	log.Info(fmt.Sprintf(format, a...))
 }

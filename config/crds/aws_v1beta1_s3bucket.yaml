@@ -54,11 +54,14 @@ spec:
           type: object
         status:
           properties:
+            acl:
+              description: The canned ACL
+              type: string
             arn:
               description: The ARN of the S3 bucket
               type: string
             locationConstraint:
-              description: The location contraint of S3 bucket
+              description: The location constraint of S3 bucket
               type: string
           type: object
   version: v1beta1

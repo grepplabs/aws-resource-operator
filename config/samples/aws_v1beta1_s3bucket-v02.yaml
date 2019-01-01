@@ -1,0 +1,29 @@
+apiVersion: aws.grepplabs.com/v1beta1
+kind: S3Bucket
+metadata:
+  labels:
+    controller-tools.k8s.io: "1.0"
+  name: s3bucket-sample
+spec:
+  # Add fields here
+  bucket: fm-new-aws-operator-bucket2
+  region: eu-central-1
+  deleteStrategy: Delete
+  ownershipStrategy: Created
+  policy: |-
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Principal": {
+            "Service": "ec2.amazonaws.com"
+          },
+          "Action": "s3:*",
+          "Resource": [
+            "arn:aws:s3:::fm-new-aws-operator-bucket2",
+            "arn:aws:s3:::fm-new-aws-operator-bucket2/*"
+          ]
+        }
+      ]
+    }

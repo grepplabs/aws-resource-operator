@@ -70,8 +70,10 @@ const (
 type S3BucketStatus struct {
 	// The ARN of the S3 bucket
 	ARN string `json:"arn,omitempty"`
-	// The location contraint of S3 bucket
+	// The location constraint of S3 bucket
 	LocationConstraint string `json:"locationConstraint,omitempty"`
+	// The canned ACL
+	Acl string `json:"acl,omitempty"`
 }
 
 // +genclient
