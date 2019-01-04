@@ -18,6 +18,7 @@ package s3bucket
 import (
 	"context"
 	"fmt"
+	"github.com/aws/aws-sdk-go/service/s3/s3manager"
 	"regexp"
 	"strings"
 
@@ -134,10 +135,10 @@ func (r *ReconcileS3Bucket) Reconcile(request reconcile.Request) (reconcile.Resu
 		// The object is being deleted
 		if structure.ContainsString(instance.ObjectMeta.Finalizers, deleteBucketFinalizerName) {
 			// our finalizer is present, so lets handle our external dependency
-			if err := r.deleteBucket(instance); err != nil {
+			if retryError := r.deleteBucket(instance); retryError != nil {
 				// if fail to delete the external dependency here, return with error
 				// so that it can be retried
-				return reconcile.Result{}, err
+				return r.handleRetryError(instance, retryError)
 			}
 
 			// remove our finalizer from the list and update it.
@@ -167,7 +168,11 @@ func (r *ReconcileS3Bucket) handleRetryError(instance *awsv1beta1.S3Bucket, retr
 	if retryError.Reason != "" {
 		r.sendEvent(instance, apiv1.EventTypeWarning, retryError.Reason, eventMessageFromError(retryError.Err))
 	}
-	return reconcile.Result{Requeue: retryError.Retryable}, retryError.Err
+	err := retryError.Err
+	if err == nil {
+		err = fmt.Errorf("error cause not specified, reason: %s", retryError.Reason)
+	}
+	return reconcile.Result{Requeue: retryError.Retryable}, err
 }
 
 func eventMessageFromError(err error) string {
@@ -404,8 +409,8 @@ func (r *ReconcileS3Bucket) updateBucketPolicy(instance *awsv1beta1.S3Bucket) *a
 		logInfof("Updating bucket policy (%s):\n%s", bucket, desiredPolicy)
 		_, err := r.awsClient.S3().PutBucketPolicy(&s3.PutBucketPolicyInput{
 			Bucket: aws.String(bucket),
-			Policy: aws.String(desiredPolicy)})
-
+			Policy: aws.String(desiredPolicy),
+		})
 		if err != nil {
 			if awsclient.IsAWSCode(err, []string{s3.ErrCodeNoSuchBucket}) {
 				return awsclient.RetryableError(err, "PutBucketPolicyFailed")
@@ -456,7 +461,7 @@ func (r *ReconcileS3Bucket) createBucket(instance *awsv1beta1.S3Bucket) *awsclie
 	r.sendEvent(instance, apiv1.EventTypeNormal, "BucketCreated", "Successfully created S3 bucket %s", bucketArn)
 
 	// update status
-	log.Info("Updating status of new S3 bucket", "bucket", bucket)
+	log.Info("S3 bucket created", "bucket", bucket)
 
 	instance.Status.LocationConstraint = r.bucketRegion(instance)
 	instance.Status.ARN = bucketArn
@@ -480,7 +485,7 @@ func (r *ReconcileS3Bucket) updateInstance(instance *awsv1beta1.S3Bucket) *awscl
 	return nil
 }
 
-func (r *ReconcileS3Bucket) deleteBucket(instance *awsv1beta1.S3Bucket) error {
+func (r *ReconcileS3Bucket) deleteBucket(instance *awsv1beta1.S3Bucket) *awsclient.RetryError {
 	if strings.EqualFold(string(instance.Spec.DeleteStrategy), string(awsv1beta1.SkipDeleteStrategy)) {
 		log.Info("Skip S3 bucket deletion. Delete strategy is Skip")
 		return nil
@@ -496,24 +501,49 @@ func (r *ReconcileS3Bucket) deleteBucket(instance *awsv1beta1.S3Bucket) error {
 		return nil
 	}
 	bucket := parsedArn.Resource
-	log.Info("Deleting S3 bucket", "bucket", bucket, "arn", instance.Status.ARN)
+	log.Info("Deleting S3 bucket", "bucket", bucket, "arn", instance.Status.ARN, "deleteStrategy", instance.Spec.DeleteStrategy)
 
-	s3conn := r.awsClient.S3()
-	_, err = s3conn.DeleteBucket(&s3.DeleteBucketInput{
-		Bucket: aws.String(parsedArn.Resource),
-	},
-	)
-	if awsclient.IsAWSErr(err, s3.ErrCodeNoSuchBucket, "") {
-		log.Info("[WARN] S3 Bucket to delete not found", "bucket", bucket)
-		return nil
-	}
-	if awsclient.IsAWSErr(err, "BucketNotEmpty", "") {
-		if strings.EqualFold(string(instance.Spec.DeleteStrategy), string(awsv1beta1.ForceDeleteStrategy)) {
-			//TODO: delete objects from the bucket
+	_, err = r.awsClient.S3().DeleteBucket(&s3.DeleteBucketInput{
+		Bucket: aws.String(bucket),
+	})
+
+	if err != nil {
+		if awsclient.IsAWSErr(err, s3.ErrCodeNoSuchBucket, "") {
+			log.Info("[WARN] S3 Bucket to delete not found", "bucket", bucket)
+			return nil
 		}
-
+		if awsclient.IsAWSErr(err, "BucketNotEmpty", "") && strings.EqualFold(string(instance.Spec.DeleteStrategy), string(awsv1beta1.ForceDeleteStrategy)) {
+			retryError := r.deleteBucketObjects(bucket)
+			if retryError != nil {
+				return retryError
+			}
+			log.Info("Deleting S3 bucket after bucket objects deletion", "bucket", bucket)
+			_, err = r.awsClient.S3().DeleteBucket(&s3.DeleteBucketInput{
+				Bucket: aws.String(bucket),
+			})
+			if err != nil {
+				return awsclient.NonRetryableError(err, "DeleteBucketFailed")
+			}
+		} else {
+			return awsclient.NonRetryableError(err, "DeleteBucketFailed")
+		}
 	}
-	return err
+	log.Info("S3 bucket deleted", "bucket", bucket)
+	return nil
+}
+
+func (r *ReconcileS3Bucket) deleteBucketObjects(bucket string) *awsclient.RetryError {
+	log.Info("Deleting S3 bucket objects", "bucket", bucket)
+
+	iter := s3manager.NewDeleteListIterator(r.awsClient.S3(), &s3.ListObjectsInput{
+		Bucket: aws.String(bucket),
+	})
+	err := s3manager.NewBatchDeleteWithClient(r.awsClient.S3()).Delete(aws.BackgroundContext(), iter)
+	if err != nil {
+		return awsclient.NonRetryableError(err, "BatchDeleteWithClientFailed")
+	}
+	log.Info("S3 bucket objects deleted", "bucket", bucket)
+	return nil
 }
 
 func logInfof(format string, a ...interface{}) {

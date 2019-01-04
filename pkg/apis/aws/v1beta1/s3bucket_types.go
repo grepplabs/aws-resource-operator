@@ -40,7 +40,7 @@ type S3BucketSpec struct {
 	Tags map[string]string `json:"tags,omitempty"`
 	// The bucket delete strategy. Defaults to "Delete"
 	// +optional
-	DeleteStrategy DeleteStrategyType `json:"destroyStrategy,omitempty"`
+	DeleteStrategy DeleteStrategyType `json:"deleteStrategy,omitempty"`
 	// The bucket ownership strategy. Defaults to "Created"
 	// +optional
 	OwnershipStrategy OwnershipStrategyType `json:"ownershipStrategy,omitempty"`

@@ -11,9 +11,12 @@ In contrast to the [aws-service-operator](https://github.com/awslabs/aws-service
 
 ### S3Bucket
 
-- create and delete bucket
+- [create bucket](https://docs.aws.amazon.com/cli/latest/reference/s3api/create-bucket.html)
+    * force bucket management when`ownershipStrategy` is`Acquire` (default`Created`)
+- [delete bucket](https://docs.aws.amazon.com/cli/latest/reference/s3api/delete-bucket.html)
+    * skip bucket deletion when`deleteStrategy` is`Skip` (default `Delete`)
+    * [delete bucket objects](https://docs.aws.amazon.com/cli/latest/reference/s3api/delete-objects.html) when`deleteStrategy` is`Force`
 - [policy](https://docs.aws.amazon.com/cli/latest/reference/s3api/put-bucket-policy.html)
 - [canned ACL](https://docs.aws.amazon.com/cli/latest/reference/s3api/put-bucket-acl.html)
     * reconciliation is based on object status
     * check [predefined set of grantees and permissions](https://docs.aws.amazon.com/AmazonS3/latest/dev/acl-overview.html#canned-acl)
-

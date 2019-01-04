@@ -34,7 +34,7 @@ spec:
             bucket:
               description: The name of the bucket
               type: string
-            destroyStrategy:
+            deleteStrategy:
               description: The bucket delete strategy. Defaults to "Delete"
               type: string
             ownershipStrategy:
