@@ -21,7 +21,7 @@ required = [
 
 [[constraint]]
   name="github.com/aws/aws-sdk-go"
-  version="v1.16.11"
+  version="v1.16.14"
 
 [[constraint]]
   name="github.com/hashicorp/go-cleanhttp"

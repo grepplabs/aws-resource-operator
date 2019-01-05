@@ -18,6 +18,8 @@ package s3bucket
 import (
 	"errors"
 	"fmt"
+	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/aws/aws-sdk-go/service/s3/s3iface"
 	"github.com/stretchr/testify/assert"
 	"testing"
 	"time"
@@ -40,6 +42,25 @@ var depKey = types.NamespacedName{Name: "foo-deployment", Namespace: "default"}
 
 const timeout = time.Second * 5
 
+type mockS3API struct {
+	s3iface.S3API
+}
+
+func (m mockS3API) HeadBucket(*s3.HeadBucketInput) (*s3.HeadBucketOutput, error) {
+	return nil, fmt.Errorf("TODO: Implement testing")
+}
+
+func newTestReconciler(mgr manager.Manager, s3conn s3iface.S3API) reconcile.Reconciler {
+	return &ReconcileS3Bucket{
+		Client:    mgr.GetClient(),
+		scheme:    mgr.GetScheme(),
+		recorder:  mgr.GetRecorder("s3bucket-controller"),
+		partition: "aws",
+		region:    "eu-central-1",
+		s3conn:    s3conn,
+	}
+}
+
 func TestReconcile(t *testing.T) {
 	g := gomega.NewGomegaWithT(t)
 	instance := &awsv1beta1.S3Bucket{ObjectMeta: metav1.ObjectMeta{Name: "foo", Namespace: "default"}}
@@ -50,7 +71,9 @@ func TestReconcile(t *testing.T) {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	c = mgr.GetClient()
 
-	recFn, requests := SetupTestReconcile(newReconciler(mgr))
+	mockS3API := mockS3API{}
+
+	recFn, requests := SetupTestReconcile(newTestReconciler(mgr, mockS3API))
 	g.Expect(add(mgr, recFn)).NotTo(gomega.HaveOccurred())
 
 	stopMgr, mgrStopped := StartTestManager(mgr, g)

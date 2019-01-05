@@ -10,7 +10,7 @@
   version = "v0.34.0"
 
 [[projects]]
-  digest = "1:f7c9da401cb69745997c5b27b596e65635703274c877b0f3e05eb68feef9a543"
+  digest = "1:9f76d705032af130b5c5a544d2b714c5b2592dbedc122dafa43881f92ed9c338"
   name = "github.com/aws/aws-sdk-go"
   packages = [
     "aws",
@@ -48,12 +48,14 @@
     "private/protocol/xml/xmlutil",
     "service/iam",
     "service/s3",
+    "service/s3/s3iface",
+    "service/s3/s3manager",
     "service/s3control",
     "service/sts",
   ]
   pruneopts = "T"
-  revision = "3991042237b45cf58c9d5f34295942d5533c28c6"
-  version = "v1.16.11"
+  revision = "fb5f514796fc4fdc6afdcf5a675a5b2baa714b9f"
+  version = "v1.16.14"
 
 [[projects]]
   branch = "master"
@@ -1045,6 +1047,8 @@
     "github.com/aws/aws-sdk-go/aws/session",
     "github.com/aws/aws-sdk-go/service/iam",
     "github.com/aws/aws-sdk-go/service/s3",
+    "github.com/aws/aws-sdk-go/service/s3/s3iface",
+    "github.com/aws/aws-sdk-go/service/s3/s3manager",
     "github.com/aws/aws-sdk-go/service/s3control",
     "github.com/aws/aws-sdk-go/service/sts",
     "github.com/davecgh/go-spew/spew",
