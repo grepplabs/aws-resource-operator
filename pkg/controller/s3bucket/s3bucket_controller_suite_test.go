@@ -17,10 +17,12 @@ package s3bucket
 
 import (
 	stdlog "log"
-	"os"
 	"path/filepath"
 	"sync"
 	"testing"
+
+	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/gomega"
 
 	"github.com/grepplabs/aws-resource-operator/pkg/apis"
 	"github.com/onsi/gomega"
@@ -33,8 +35,15 @@ import (
 
 var cfg *rest.Config
 
-func TestMain(m *testing.M) {
-	t := &envtest.Environment{
+func TestS3BucketController(t *testing.T) {
+	RegisterFailHandler(Fail)
+	RunSpecsWithDefaultAndCustomReporters(t, "S3Bucket Suite", []Reporter{envtest.NewlineReporter{}})
+}
+
+var t *envtest.Environment
+
+var _ = BeforeSuite(func() {
+	t = &envtest.Environment{
 		CRDDirectoryPaths: []string{filepath.Join("..", "..", "..", "config", "crds")},
 	}
 	apis.AddToScheme(scheme.Scheme)
@@ -43,11 +52,11 @@ func TestMain(m *testing.M) {
 	if cfg, err = t.Start(); err != nil {
 		stdlog.Fatal(err)
 	}
+})
 
-	code := m.Run()
+var _ = AfterSuite(func() {
 	t.Stop()
-	os.Exit(code)
-}
+})
 
 // SetupTestReconcile returns a reconcile.Reconcile implementation that delegates to inner and
 // writes the request to requests after Reconcile is finished.
@@ -62,13 +71,27 @@ func SetupTestReconcile(inner reconcile.Reconciler) (reconcile.Reconciler, chan 
 }
 
 // StartTestManager adds recFn
-func StartTestManager(mgr manager.Manager, g *gomega.GomegaWithT) (chan struct{}, *sync.WaitGroup) {
+func StartTestManagerOld(mgr manager.Manager, g *gomega.GomegaWithT) (chan struct{}, *sync.WaitGroup) {
 	stop := make(chan struct{})
 	wg := &sync.WaitGroup{}
 	go func() {
 		wg.Add(1)
 		g.Expect(mgr.Start(stop)).NotTo(gomega.HaveOccurred())
 		wg.Done()
+	}()
+	return stop, wg
+}
+
+func StartTestManager(mgr manager.Manager) (chan struct{}, *sync.WaitGroup) {
+	stop := make(chan struct{})
+	wg := &sync.WaitGroup{}
+	go func() {
+		defer GinkgoRecover()
+
+		wg.Add(1)
+		defer wg.Done()
+
+		Expect(mgr.Start(stop)).NotTo(gomega.HaveOccurred())
 	}()
 	return stop, wg
 }
