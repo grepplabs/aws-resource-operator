@@ -18,11 +18,13 @@ package s3bucket
 import (
 	"errors"
 	"fmt"
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/golang/mock/gomock"
 	"golang.org/x/net/context"
 	"sync"
 	"time"
 
-	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/aws/aws-sdk-go/service/s3/s3iface"
 	"k8s.io/client-go/util/flowcontrol"
 
@@ -40,14 +42,6 @@ import (
 )
 
 const timeout = time.Second * 5
-
-type mockS3API struct {
-	s3iface.S3API
-}
-
-func (m mockS3API) HeadBucket(*s3.HeadBucketInput) (*s3.HeadBucketOutput, error) {
-	return nil, fmt.Errorf("TODO: Implement testing")
-}
 
 func newTestReconciler(mgr manager.Manager, s3conn s3iface.S3API) reconcile.Reconciler {
 	return &ReconcileS3Bucket{
@@ -67,8 +61,17 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 		stopMgr         chan struct{}
 		mgrStopped      *sync.WaitGroup
 		expectedRequest = reconcile.Request{NamespacedName: types.NamespacedName{Name: "s3-foo-bucket", Namespace: "default"}}
+		invalidRequest  = reconcile.Request{NamespacedName: types.NamespacedName{Name: "s3-foo-invalid", Namespace: "default"}}
+
+		instance *awsv1beta1.S3Bucket
+
+		mockCtrl  *gomock.Controller
+		mockS3API *MockS3API
 	)
 	BeforeEach(func() {
+		mockCtrl = gomock.NewController(GinkgoT())
+		mockS3API = NewMockS3API(mockCtrl)
+
 		cfg.RateLimiter = flowcontrol.NewFakeAlwaysRateLimiter()
 		// Setup the Manager and Controller.  Wrap the Controller Reconcile function so it writes each request to a
 		// channel when it is finished.
@@ -77,7 +80,6 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 
 		c = mgr.GetClient()
 
-		mockS3API := mockS3API{}
 		var recFn reconcile.Reconciler
 		recFn, requests = SetupTestReconcile(newTestReconciler(mgr, mockS3API))
 		Expect(add(mgr, recFn)).NotTo(HaveOccurred())
@@ -85,13 +87,43 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 		stopMgr, mgrStopped = StartTestManager(mgr)
 
 	})
-
-	Context("Create S3Bucket", func() {
-		It("First try", func() {
-			instance := &awsv1beta1.S3Bucket{ObjectMeta: metav1.ObjectMeta{Name: "s3-foo-bucket", Namespace: "default"}}
+	Context("Create S3Bucket validation fails", func() {
+		AfterEach(func() {
+			Expect(c.Delete(context.TODO(), instance)).NotTo(HaveOccurred())
+			Eventually(requests, timeout).Should(Receive(Equal(invalidRequest)))
+		})
+		It("Reject object with bucket name", func() {
+			instance = &awsv1beta1.S3Bucket{ObjectMeta: metav1.ObjectMeta{Name: "s3-foo-invalid", Namespace: "default"}}
 			err := c.Create(context.TODO(), instance)
 			Expect(err).NotTo(HaveOccurred())
-			defer c.Delete(context.TODO(), instance)
+			Eventually(requests, timeout).Should(Receive(Equal(invalidRequest)))
+		})
+	})
+	Context("Create S3Bucket", func() {
+		var (
+			instance *awsv1beta1.S3Bucket
+		)
+		AfterEach(func() {
+			Expect(c.Delete(context.TODO(), instance)).NotTo(HaveOccurred())
+			Eventually(requests, timeout).Should(Receive(Equal(expectedRequest)))
+		})
+		It("TODO: implement ...", func() {
+			mockS3API.EXPECT().HeadBucket(
+				&s3.HeadBucketInput{
+					Bucket: aws.String("test-bucket"),
+				}).Return(nil, fmt.Errorf("TODO: Implement testing"))
+
+			instance = &awsv1beta1.S3Bucket{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "s3-foo-bucket",
+					Namespace: "default",
+				},
+				Spec: awsv1beta1.S3BucketSpec{
+					Bucket: "test-bucket",
+				},
+			}
+			err := c.Create(context.TODO(), instance)
+			Expect(err).NotTo(HaveOccurred())
 			Eventually(requests, timeout).Should(Receive(Equal(expectedRequest)))
 		})
 	})
@@ -99,6 +131,7 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 	AfterEach(func() {
 		close(stopMgr)
 		mgrStopped.Wait()
+		mockCtrl.Finish()
 	})
 })
 

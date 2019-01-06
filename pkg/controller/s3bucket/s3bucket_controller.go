@@ -159,7 +159,7 @@ func (r *ReconcileS3Bucket) Reconcile(request reconcile.Request) (reconcile.Resu
 
 	// Validate parameters before reconcile
 	retryError := r.validateInstance(instance)
-	if err != nil {
+	if retryError != nil {
 		return r.handleRetryError(instance, retryError)
 	}
 

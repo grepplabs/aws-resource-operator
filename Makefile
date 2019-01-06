@@ -53,3 +53,9 @@ docker-build: test
 # Push the docker image
 docker-push:
 	docker push ${IMG}
+
+# mocks
+mockgen:
+	mockgen -package s3bucket \
+	   -source vendor/github.com/aws/aws-sdk-go/service/s3/s3iface/interface.go \
+	   -destination pkg/controller/s3bucket/s3bucket_mock_s3api_test.go
