@@ -196,9 +196,10 @@ func eventMessageFromError(err error) string {
 
 func (r ReconcileS3Bucket) validateInstance(instance *awsv1beta1.S3Bucket) *awsclient.RetryError {
 	bucket := instance.Spec.Bucket
+	region := r.bucketRegion(instance)
 
-	if bucket == "" {
-		return awsclient.NonRetryableError(fmt.Errorf("bucket name is empty"), "BucketNameEmpty")
+	if err := validateBucketName(bucket, region); err != nil {
+		return awsclient.NonRetryableError(fmt.Errorf("error validating S3 bucket name: %s", err), "BucketNameValidation")
 	}
 	if instance.Status.ARN != "" {
 		bucketARN := r.bucketARN(instance)
@@ -210,6 +211,38 @@ func (r ReconcileS3Bucket) validateInstance(instance *awsv1beta1.S3Bucket) *awsc
 		bucketRegion := r.bucketRegion(instance)
 		if instance.Status.LocationConstraint != bucketRegion {
 			return awsclient.NonRetryableError(fmt.Errorf("bucket region changed"), "BucketRegionChanged")
+		}
+	}
+	return nil
+}
+
+// https://docs.aws.amazon.com/AmazonS3/latest/dev/BucketRestrictions.html
+func validateBucketName(bucket string, region string) error {
+	if region != "us-east-1" {
+		if (len(bucket) < 3) || (len(bucket) > 63) {
+			return fmt.Errorf("%q must contain from 3 to 63 characters", bucket)
+		}
+		if !regexp.MustCompile(`^[0-9a-z-.]+$`).MatchString(bucket) {
+			return fmt.Errorf("only lowercase alphanumeric characters and hyphens allowed in %q", bucket)
+		}
+		if regexp.MustCompile(`^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$`).MatchString(bucket) {
+			return fmt.Errorf("%q must not be formatted as an IP address", bucket)
+		}
+		if strings.HasPrefix(bucket, `.`) {
+			return fmt.Errorf("%q cannot start with a period", bucket)
+		}
+		if strings.HasSuffix(bucket, `.`) {
+			return fmt.Errorf("%q cannot end with a period", bucket)
+		}
+		if strings.Contains(bucket, `..`) {
+			return fmt.Errorf("%q can be only one period between labels", bucket)
+		}
+	} else {
+		if len(bucket) > 255 {
+			return fmt.Errorf("%q must contain less than 256 characters", bucket)
+		}
+		if !regexp.MustCompile(`^[0-9a-zA-Z-._]+$`).MatchString(bucket) {
+			return fmt.Errorf("only alphanumeric characters, hyphens, periods, and underscores allowed in %q", bucket)
 		}
 	}
 	return nil
@@ -251,7 +284,7 @@ func (r ReconcileS3Bucket) reconcileInstance(request reconcile.Request, instance
 
 	// check created by operator
 	if instance.Status.ARN == "" {
-		if strings.EqualFold(string(instance.Spec.OwnershipStrategy), string(awsv1beta1.AcquireOwnershipStrategy)) {
+		if instance.Spec.OwnershipStrategy == awsv1beta1.AcquireOwnershipStrategy {
 			if retryError = r.acquireBucketOwnership(instance); retryError != nil {
 				return retryError
 			}
@@ -490,7 +523,7 @@ func (r ReconcileS3Bucket) updateInstance(instance *awsv1beta1.S3Bucket) *awscli
 }
 
 func (r ReconcileS3Bucket) deleteBucket(instance *awsv1beta1.S3Bucket) *awsclient.RetryError {
-	if strings.EqualFold(string(instance.Spec.DeleteStrategy), string(awsv1beta1.SkipDeleteStrategy)) {
+	if instance.Spec.DeleteStrategy == awsv1beta1.SkipDeleteStrategy {
 		log.Info("Skip S3 bucket deletion. Delete strategy is Skip")
 		return nil
 	}
@@ -516,7 +549,7 @@ func (r ReconcileS3Bucket) deleteBucket(instance *awsv1beta1.S3Bucket) *awsclien
 			log.Info("[WARN] S3 Bucket to delete not found", "bucket", bucket)
 			return nil
 		}
-		if awsclient.IsAWSErr(err, "BucketNotEmpty", "") && strings.EqualFold(string(instance.Spec.DeleteStrategy), string(awsv1beta1.ForceDeleteStrategy)) {
+		if awsclient.IsAWSErr(err, "BucketNotEmpty", "") && instance.Spec.DeleteStrategy == awsv1beta1.ForceDeleteStrategy {
 			retryError := r.deleteBucketObjects(bucket)
 			if retryError != nil {
 				return retryError

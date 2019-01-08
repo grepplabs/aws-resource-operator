@@ -36,9 +36,16 @@ spec:
               type: string
             deleteStrategy:
               description: The bucket delete strategy. Defaults to "Delete"
+              enum:
+              - Delete
+              - Skip
+              - Force
               type: string
             ownershipStrategy:
               description: The bucket ownership strategy. Defaults to "Created"
+              enum:
+              - Created
+              - Acquire
               type: string
             policy:
               description: A valid bucket policy JSON document

@@ -19,9 +19,11 @@ import (
 	"errors"
 	"fmt"
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/golang/mock/gomock"
 	"golang.org/x/net/context"
+	"strings"
 	"sync"
 	"time"
 
@@ -107,11 +109,30 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 			Expect(c.Delete(context.TODO(), instance)).NotTo(HaveOccurred())
 			Eventually(requests, timeout).Should(Receive(Equal(expectedRequest)))
 		})
-		It("TODO: implement ...", func() {
+		It("Create S3Bucket with default attributes", func() {
 			mockS3API.EXPECT().HeadBucket(
 				&s3.HeadBucketInput{
 					Bucket: aws.String("test-bucket"),
-				}).Return(nil, fmt.Errorf("TODO: Implement testing"))
+				}).Return(nil, awserr.NewRequestFailure(awserr.New("NotFound", "Not Found", fmt.Errorf("some error")), 404, "F94AFE7597CFC78F"))
+
+			mockS3API.EXPECT().CreateBucket(
+				&s3.CreateBucketInput{
+					Bucket: aws.String("test-bucket"),
+					ACL:    aws.String("private"),
+					CreateBucketConfiguration: &s3.CreateBucketConfiguration{
+						LocationConstraint: aws.String("eu-central-1"),
+					},
+				}).Return(&s3.CreateBucketOutput{Location: aws.String("eu-central-1")}, nil)
+
+			mockS3API.EXPECT().GetBucketPolicy(
+				&s3.GetBucketPolicyInput{
+					Bucket: aws.String("test-bucket"),
+				}).Return(&s3.GetBucketPolicyOutput{Policy: aws.String("")}, nil).MinTimes(1)
+
+			mockS3API.EXPECT().HeadBucket(
+				&s3.HeadBucketInput{
+					Bucket: aws.String("test-bucket"),
+				}).Return(&s3.HeadBucketOutput{}, nil).MinTimes(1)
 
 			instance = &awsv1beta1.S3Bucket{
 				ObjectMeta: metav1.ObjectMeta{
@@ -122,6 +143,9 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 					Bucket: "test-bucket",
 				},
 			}
+
+			//TODO: validate eventing
+
 			err := c.Create(context.TODO(), instance)
 			Expect(err).NotTo(HaveOccurred())
 			Eventually(requests, timeout).Should(Receive(Equal(expectedRequest)))
@@ -136,7 +160,7 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 })
 
 var _ = Describe("S3Bucket Help Functions Suite", func() {
-	DescribeTable("Se event message from error",
+	DescribeTable("S3 event message from error",
 		func(input string, expected string) {
 			Expect(eventMessageFromError(errors.New(input))).To(Equal(expected))
 		},
@@ -164,5 +188,58 @@ var _ = Describe("S3Bucket Help Functions Suite", func() {
 			"\n\tstatus code: 301, request id: , host id: ",
 			"Reconcile failed",
 		),
+	)
+
+	DescribeTable("Validate bucket name - valid dns names ",
+		func(bucket string) {
+			err := validateBucketName(bucket, "us-west-2")
+			Expect(err).NotTo(HaveOccurred())
+		},
+		Entry("foobar", "foobar"),
+		Entry("foo.bar", "foo.bar"),
+		Entry("foo.bar.baz", "foo.bar.baz"),
+		Entry("1234", "1234"),
+		Entry("foo-bar", "foo-bar"),
+		Entry("x * 63", strings.Repeat("x", 63)),
+	)
+
+	DescribeTable("Validate bucket name - invalid dns names ",
+		func(bucket string) {
+			err := validateBucketName(bucket, "us-west-2")
+			Expect(err).To(HaveOccurred())
+		},
+		Entry("foo..bar", "foo..bar"),
+		Entry("Foo.Bar", "Foo.Bar"),
+		Entry("192.168.0.1", "192.168.0.1"),
+		Entry("127.0.0.1", "127.0.0.1"),
+		Entry(".foo", ".foo"),
+		Entry("bar.", "bar."),
+		Entry("foo_bar", "foo_bar"),
+		Entry("x * 64", strings.Repeat("x", 64)),
+	)
+
+	DescribeTable("Validate bucket name - valid east names ",
+		func(bucket string) {
+			err := validateBucketName(bucket, "us-east-1")
+			Expect(err).NotTo(HaveOccurred())
+		},
+		Entry("foobar", "foobar"),
+		Entry("foo_bar", "foo_bar"),
+		Entry("127.0.0.1", "127.0.0.1"),
+		Entry("foo..bar", "foo..bar"),
+		Entry("foo_bar_baz", "foo_bar_baz"),
+		Entry("foo.bar.baz", "foo.bar.baz"),
+		Entry("Foo.Bar", "Foo.Bar"),
+		Entry("foobar", "foobar"),
+		Entry("x * 255", strings.Repeat("x", 255)),
+	)
+
+	DescribeTable("Validate bucket name - invalid east names ",
+		func(bucket string) {
+			err := validateBucketName(bucket, "us-east-1")
+			Expect(err).To(HaveOccurred())
+		},
+		Entry("foo;bar", "foo;bar"),
+		Entry("x * 256", strings.Repeat("x", 256)),
 	)
 })
