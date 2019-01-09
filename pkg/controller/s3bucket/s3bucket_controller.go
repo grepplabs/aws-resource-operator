@@ -410,7 +410,7 @@ func (r ReconcileS3Bucket) reconcileBucketPolicy(instance *awsv1beta1.S3Bucket) 
 		// no update
 		return nil
 	}
-	return r.updateBucketPolicy(instance)
+	return r.updateBucketPolicy(instance, currentPolicy)
 }
 
 func (r ReconcileS3Bucket) readyBucketPolicy(bucket string) (string, *awsclient.RetryError) {
@@ -440,7 +440,7 @@ func (r ReconcileS3Bucket) readyBucketPolicy(bucket string) (string, *awsclient.
 	return "", nil
 }
 
-func (r ReconcileS3Bucket) updateBucketPolicy(instance *awsv1beta1.S3Bucket) *awsclient.RetryError {
+func (r ReconcileS3Bucket) updateBucketPolicy(instance *awsv1beta1.S3Bucket, currentPolicy string) *awsclient.RetryError {
 	bucket := instance.Spec.Bucket
 	desiredPolicy := strings.TrimSpace(instance.Spec.Policy)
 	if desiredPolicy != "" {
@@ -455,7 +455,13 @@ func (r ReconcileS3Bucket) updateBucketPolicy(instance *awsv1beta1.S3Bucket) *aw
 			}
 			return awsclient.NonRetryableError(fmt.Errorf("error update S3 Bucket policy (%s): %s", bucket, err), "PutBucketPolicyFailed")
 		}
-		r.sendEvent(instance, apiv1.EventTypeNormal, "PutBucketPolicy", "Bucket policy changed")
+		var reason string
+		if currentPolicy == "" {
+			reason = "BucketPolicyCreated"
+		} else {
+			reason = "BucketPolicyUpdated"
+		}
+		r.sendEvent(instance, apiv1.EventTypeNormal, reason, "Bucket policy changed")
 	} else {
 		log.Info("Deleting bucket policy", "bucket", bucket)
 		_, err := r.s3conn.DeleteBucketPolicy(&s3.DeleteBucketPolicyInput{
@@ -467,7 +473,7 @@ func (r ReconcileS3Bucket) updateBucketPolicy(instance *awsv1beta1.S3Bucket) *aw
 			}
 			return awsclient.NonRetryableError(fmt.Errorf("error delete S3 Bucket policy (%s): %s", bucket, err), "DeleteBucketPolicyFailed")
 		}
-		r.sendEvent(instance, apiv1.EventTypeNormal, "DeleteBucketPolicy", "Bucket policy deleted")
+		r.sendEvent(instance, apiv1.EventTypeNormal, "BucketPolicyDeleted", "Bucket policy deleted")
 	}
 	return nil
 }
