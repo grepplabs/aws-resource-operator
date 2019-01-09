@@ -30,6 +30,15 @@ spec:
           properties:
             acl:
               description: The canned ACL to apply. Defaults to "private"
+              enum:
+              - private
+              - public-read
+              - public-read-write
+              - aws-exec-read
+              - authenticated-read
+              - bucket-owner-read
+              - bucket-owner-full-control
+              - log-delivery-write
               type: string
             bucket:
               description: The name of the bucket

@@ -31,6 +31,7 @@ type S3BucketSpec struct {
 	Region string `json:"region,omitempty"`
 	// The canned ACL to apply. Defaults to "private"
 	// +optional
+	// +kubebuilder:validation:Enum=private,public-read,public-read-write,aws-exec-read,authenticated-read,bucket-owner-read,bucket-owner-full-control,log-delivery-write
 	Acl string `json:"acl,omitempty"`
 	// A valid bucket policy JSON document
 	// +optional

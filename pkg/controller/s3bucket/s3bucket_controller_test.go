@@ -23,6 +23,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/golang/mock/gomock"
 	"golang.org/x/net/context"
+	"k8s.io/api/core/v1"
 	"strings"
 	"sync"
 	"time"
@@ -31,6 +32,7 @@ import (
 	"k8s.io/client-go/util/flowcontrol"
 
 	awsv1beta1 "github.com/grepplabs/aws-resource-operator/pkg/apis/aws/v1beta1"
+	testevents "github.com/grepplabs/aws-resource-operator/test/events"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/ginkgo/extensions/table"
@@ -65,10 +67,52 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 		expectedRequest = reconcile.Request{NamespacedName: types.NamespacedName{Name: "s3-foo-bucket", Namespace: "default"}}
 		invalidRequest  = reconcile.Request{NamespacedName: types.NamespacedName{Name: "s3-foo-invalid", Namespace: "default"}}
 
+		testEvents chan TestEvent
+
 		instance *awsv1beta1.S3Bucket
 
 		mockCtrl  *gomock.Controller
 		mockS3API *MockS3API
+
+		shouldSendBucketCreatedEvent = func(kind, namespace string) {
+			events := &v1.EventList{}
+			filter := func(r, k string) func(v1.Event) bool {
+				return func(ev v1.Event) bool { return ev.Reason == r && ev.InvolvedObject.Kind == k }
+			}
+
+			Eventually(func() error {
+				err := c.List(context.TODO(), &client.ListOptions{}, events)
+				if err != nil {
+					return err
+				}
+				if testevents.None(events.Items, filter("BucketCreated", kind)) {
+					return fmt.Errorf("events haven't been sent yet")
+				}
+				return nil
+			}, timeout).Should(Succeed())
+
+			bucketCreatedEvents := testevents.Select(events.Items, filter("BucketCreated", kind))
+			Expect(bucketCreatedEvents).ToNot(BeEmpty())
+			for _, e := range bucketCreatedEvents {
+				Expect(e.InvolvedObject.Kind).To(Equal(kind))
+				Expect(e.InvolvedObject.Name).To(Equal("s3-foo-bucket"))
+				Expect(e.InvolvedObject.Namespace).To(Equal(namespace))
+				Expect(e.Type).To(Equal(string(v1.EventTypeNormal)))
+			}
+		}
+		shouldWaitForStatusUpdate = func(key types.NamespacedName, status awsv1beta1.S3BucketStatus) {
+			var obj = &awsv1beta1.S3Bucket{}
+			Eventually(func() error {
+				err := c.Get(context.TODO(), key, obj)
+				if err != nil {
+					return err
+				}
+				if obj.Status != status {
+					return fmt.Errorf("status not updated")
+				}
+				return nil
+			}, timeout).Should(Succeed())
+		}
 	)
 	BeforeEach(func() {
 		mockCtrl = gomock.NewController(GinkgoT())
@@ -83,7 +127,10 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 		c = mgr.GetClient()
 
 		var recFn reconcile.Reconciler
-		recFn, requests = SetupTestReconcile(newTestReconciler(mgr, mockS3API))
+		testReconciler := newTestReconciler(mgr, mockS3API)
+		recFn, testEvents = SetupTestEventRecorder(testReconciler)
+		_ = testEvents
+		recFn, requests = SetupTestReconcile(recFn)
 		Expect(add(mgr, recFn)).NotTo(HaveOccurred())
 
 		stopMgr, mgrStopped = StartTestManager(mgr)
@@ -106,6 +153,11 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 			instance *awsv1beta1.S3Bucket
 		)
 		AfterEach(func() {
+			mockS3API.EXPECT().DeleteBucket(
+				&s3.DeleteBucketInput{
+					Bucket: aws.String("test-bucket"),
+				}).Return(&s3.DeleteBucketOutput{}, nil).AnyTimes()
+
 			Expect(c.Delete(context.TODO(), instance)).NotTo(HaveOccurred())
 			Eventually(requests, timeout).Should(Receive(Equal(expectedRequest)))
 		})
@@ -143,12 +195,17 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 					Bucket: "test-bucket",
 				},
 			}
-
-			//TODO: validate eventing
-
 			err := c.Create(context.TODO(), instance)
 			Expect(err).NotTo(HaveOccurred())
 			Eventually(requests, timeout).Should(Receive(Equal(expectedRequest)))
+
+			shouldSendBucketCreatedEvent("S3Bucket", "default")
+
+			shouldWaitForStatusUpdate(expectedRequest.NamespacedName,
+				awsv1beta1.S3BucketStatus{
+					ARN:                "arn:aws:s3:::test-bucket",
+					LocationConstraint: "eu-central-1",
+					Acl:                "private"})
 		})
 	})
 

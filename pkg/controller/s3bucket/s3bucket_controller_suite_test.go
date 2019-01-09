@@ -16,6 +16,9 @@ limitations under the License.
 package s3bucket
 
 import (
+	"k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/record"
 	stdlog "log"
 	"path/filepath"
 	"sync"
@@ -82,4 +85,32 @@ func StartTestManager(mgr manager.Manager) (chan struct{}, *sync.WaitGroup) {
 		Expect(mgr.Start(stop)).NotTo(gomega.HaveOccurred())
 	}()
 	return stop, wg
+}
+
+type TestEvent struct {
+	Namespace string
+}
+
+type testEventRecorder struct {
+	record.EventRecorder
+	events chan TestEvent
+}
+
+func (t *testEventRecorder) Eventf(object runtime.Object, eventtype, reason, messageFmt string, args ...interface{}) {
+	obj, ok := object.(v1.Object)
+	Expect(ok).To(BeTrue())
+	go func() {
+		t.events <- TestEvent{Namespace: obj.GetNamespace()}
+	}()
+	t.EventRecorder.Eventf(object, eventtype, reason, messageFmt, args...)
+}
+
+func SetupTestEventRecorder(inner reconcile.Reconciler) (reconcile.Reconciler, chan TestEvent) {
+	events := make(chan TestEvent)
+	reconciler := inner.(*ReconcileS3Bucket)
+	reconciler.recorder = &testEventRecorder{
+		EventRecorder: reconciler.recorder,
+		events:        events,
+	}
+	return reconciler, events
 }
