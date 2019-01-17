@@ -9,7 +9,7 @@ jobs:
       - run:
           name: install kubebuilder
           command: |
-            echo 'export KUBEBUILDER_VERSION=1.0.7' >> $BASH_ENV
+            echo 'export KUBEBUILDER_VERSION=1.0.8' >> $BASH_ENV
             echo 'export KUBEBUILDER_DIR=/usr/local/kubebuilder/bin' >> $BASH_ENV
             echo 'export KUBEBUILDER_URL=https://github.com/kubernetes-sigs/kubebuilder/releases/download/v${KUBEBUILDER_VERSION}/kubebuilder_${KUBEBUILDER_VERSION}_linux_amd64.tar.gz' >> $BASH_ENV
             source $BASH_ENV

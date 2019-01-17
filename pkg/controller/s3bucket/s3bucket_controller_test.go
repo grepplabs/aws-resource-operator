@@ -116,6 +116,34 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 				return nil
 			}, timeout).Should(Succeed())
 		}
+		mockHeadBucketNotFound = func() {
+			mockS3API.EXPECT().HeadBucket(
+				&s3.HeadBucketInput{
+					Bucket: aws.String("test-bucket"),
+				}).Return(nil, awserr.NewRequestFailure(awserr.New("NotFound", "Not Found", fmt.Errorf("some error")), 404, "F94AFE7597CFC78F"))
+		}
+		mockCreateBucket = func() {
+			mockS3API.EXPECT().CreateBucket(
+				&s3.CreateBucketInput{
+					Bucket: aws.String("test-bucket"),
+					ACL:    aws.String("private"),
+					CreateBucketConfiguration: &s3.CreateBucketConfiguration{
+						LocationConstraint: aws.String("eu-central-1"),
+					},
+				}).Return(&s3.CreateBucketOutput{Location: aws.String("eu-central-1")}, nil)
+		}
+		mockGetBucketPolicy = func(policy string, times int) {
+			mockS3API.EXPECT().GetBucketPolicy(
+				&s3.GetBucketPolicyInput{
+					Bucket: aws.String("test-bucket"),
+				}).Return(&s3.GetBucketPolicyOutput{Policy: aws.String(policy)}, nil).Times(times)
+		}
+		mockHeadBucket = func(times int) {
+			mockS3API.EXPECT().HeadBucket(
+				&s3.HeadBucketInput{
+					Bucket: aws.String("test-bucket"),
+				}).Return(&s3.HeadBucketOutput{}, nil).Times(times)
+		}
 	)
 	BeforeEach(func() {
 		mockCtrl = gomock.NewController(GinkgoT())
@@ -171,29 +199,10 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 				objectName = "s3-foo-bucket-1"
 			})
 			It("Create S3Bucket with default attributes", func() {
-				mockS3API.EXPECT().HeadBucket(
-					&s3.HeadBucketInput{
-						Bucket: aws.String("test-bucket"),
-					}).Return(nil, awserr.NewRequestFailure(awserr.New("NotFound", "Not Found", fmt.Errorf("some error")), 404, "F94AFE7597CFC78F"))
-
-				mockS3API.EXPECT().CreateBucket(
-					&s3.CreateBucketInput{
-						Bucket: aws.String("test-bucket"),
-						ACL:    aws.String("private"),
-						CreateBucketConfiguration: &s3.CreateBucketConfiguration{
-							LocationConstraint: aws.String("eu-central-1"),
-						},
-					}).Return(&s3.CreateBucketOutput{Location: aws.String("eu-central-1")}, nil)
-
-				mockS3API.EXPECT().GetBucketPolicy(
-					&s3.GetBucketPolicyInput{
-						Bucket: aws.String("test-bucket"),
-					}).Return(&s3.GetBucketPolicyOutput{Policy: aws.String("")}, nil).Times(2)
-
-				mockS3API.EXPECT().HeadBucket(
-					&s3.HeadBucketInput{
-						Bucket: aws.String("test-bucket"),
-					}).Return(&s3.HeadBucketOutput{}, nil)
+				mockHeadBucketNotFound()
+				mockCreateBucket()
+				mockGetBucketPolicy("", 2)
+				mockHeadBucket(1)
 
 				instance = &awsv1beta1.S3Bucket{
 					ObjectMeta: metav1.ObjectMeta{
@@ -226,29 +235,10 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 				objectName = "s3-foo-bucket-2"
 			})
 			It("Create, update and delete S3Bucket policy", func() {
-				mockS3API.EXPECT().HeadBucket(
-					&s3.HeadBucketInput{
-						Bucket: aws.String("test-bucket"),
-					}).Return(nil, awserr.NewRequestFailure(awserr.New("NotFound", "Not Found", fmt.Errorf("some error")), 404, "F94AFE7597CFC78F"))
-
-				mockS3API.EXPECT().HeadBucket(
-					&s3.HeadBucketInput{
-						Bucket: aws.String("test-bucket"),
-					}).Return(&s3.HeadBucketOutput{}, nil).Times(3)
-
-				mockS3API.EXPECT().CreateBucket(
-					&s3.CreateBucketInput{
-						Bucket: aws.String("test-bucket"),
-						ACL:    aws.String("private"),
-						CreateBucketConfiguration: &s3.CreateBucketConfiguration{
-							LocationConstraint: aws.String("eu-central-1"),
-						},
-					}).Return(&s3.CreateBucketOutput{Location: aws.String("eu-central-1")}, nil)
-
-				mockS3API.EXPECT().GetBucketPolicy(
-					&s3.GetBucketPolicyInput{
-						Bucket: aws.String("test-bucket"),
-					}).Return(&s3.GetBucketPolicyOutput{Policy: aws.String("")}, nil)
+				mockHeadBucketNotFound()
+				mockCreateBucket()
+				mockHeadBucket(3)
+				mockGetBucketPolicy("", 1)
 
 				policyAllow := `{"Version": "2012-10-17","Statement": [{"Effect": "Allow"}]}`
 				mockS3API.EXPECT().PutBucketPolicy(
@@ -257,10 +247,7 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 						Policy: aws.String(policyAllow),
 					}).Return(&s3.PutBucketPolicyOutput{}, nil)
 
-				mockS3API.EXPECT().GetBucketPolicy(
-					&s3.GetBucketPolicyInput{
-						Bucket: aws.String("test-bucket"),
-					}).Return(&s3.GetBucketPolicyOutput{Policy: aws.String(policyAllow)}, nil)
+				mockGetBucketPolicy(policyAllow, 1)
 
 				instance = &awsv1beta1.S3Bucket{
 					ObjectMeta: metav1.ObjectMeta{
@@ -289,10 +276,7 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 				shouldSendEvent("S3Bucket", "default", objectName, "BucketPolicyCreated")
 
 				// UPDATE policy
-				mockS3API.EXPECT().GetBucketPolicy(
-					&s3.GetBucketPolicyInput{
-						Bucket: aws.String("test-bucket"),
-					}).Return(&s3.GetBucketPolicyOutput{Policy: aws.String(policyAllow)}, nil)
+				mockGetBucketPolicy(policyAllow, 1)
 
 				policyDisallow := `{"Version": "2012-10-17","Statement": [{"Effect": "Disallow"}]}`
 				mockS3API.EXPECT().PutBucketPolicy(
@@ -311,10 +295,7 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 				shouldSendEvent("S3Bucket", "default", objectName, "BucketPolicyUpdated")
 
 				// DELETE policy
-				mockS3API.EXPECT().GetBucketPolicy(
-					&s3.GetBucketPolicyInput{
-						Bucket: aws.String("test-bucket"),
-					}).Return(&s3.GetBucketPolicyOutput{Policy: aws.String(policyDisallow)}, nil)
+				mockGetBucketPolicy(policyDisallow, 1)
 
 				mockS3API.EXPECT().DeleteBucketPolicy(
 					&s3.DeleteBucketPolicyInput{
@@ -335,29 +316,10 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 				objectName = "s3-foo-bucket-3"
 			})
 			It("Update S3Bucket canned ACL", func() {
-				mockS3API.EXPECT().HeadBucket(
-					&s3.HeadBucketInput{
-						Bucket: aws.String("test-bucket"),
-					}).Return(nil, awserr.NewRequestFailure(awserr.New("NotFound", "Not Found", fmt.Errorf("some error")), 404, "F94AFE7597CFC78F"))
-
-				mockS3API.EXPECT().CreateBucket(
-					&s3.CreateBucketInput{
-						Bucket: aws.String("test-bucket"),
-						ACL:    aws.String("private"),
-						CreateBucketConfiguration: &s3.CreateBucketConfiguration{
-							LocationConstraint: aws.String("eu-central-1"),
-						},
-					}).Return(&s3.CreateBucketOutput{Location: aws.String("eu-central-1")}, nil)
-
-				mockS3API.EXPECT().GetBucketPolicy(
-					&s3.GetBucketPolicyInput{
-						Bucket: aws.String("test-bucket"),
-					}).Return(&s3.GetBucketPolicyOutput{Policy: aws.String("")}, nil).Times(4)
-
-				mockS3API.EXPECT().HeadBucket(
-					&s3.HeadBucketInput{
-						Bucket: aws.String("test-bucket"),
-					}).Return(&s3.HeadBucketOutput{}, nil).Times(3)
+				mockHeadBucketNotFound()
+				mockCreateBucket()
+				mockGetBucketPolicy("", 4)
+				mockHeadBucket(3)
 
 				instance = &awsv1beta1.S3Bucket{
 					ObjectMeta: metav1.ObjectMeta{
@@ -383,7 +345,7 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 						LocationConstraint: "eu-central-1",
 						Acl:                "private"})
 
-				// Update ACL
+				// UPDATE ACL
 				mockS3API.EXPECT().PutBucketAcl(
 					&s3.PutBucketAclInput{
 						Bucket: aws.String("test-bucket"),
