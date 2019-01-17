@@ -60,12 +60,13 @@ func newTestReconciler(mgr manager.Manager, s3conn s3iface.S3API) reconcile.Reco
 
 var _ = Describe("S3Bucket Reconcile Suite", func() {
 	var (
-		c               client.Client
-		requests        chan reconcile.Request
-		stopMgr         chan struct{}
-		mgrStopped      *sync.WaitGroup
-		expectedRequest = reconcile.Request{NamespacedName: types.NamespacedName{Name: "s3-foo-bucket", Namespace: "default"}}
-		invalidRequest  = reconcile.Request{NamespacedName: types.NamespacedName{Name: "s3-foo-invalid", Namespace: "default"}}
+		c          client.Client
+		requests   chan reconcile.Request
+		stopMgr    chan struct{}
+		mgrStopped *sync.WaitGroup
+
+		expectedRequest reconcile.Request
+		objectName      string
 
 		testEvents chan TestEvent
 
@@ -74,10 +75,12 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 		mockCtrl  *gomock.Controller
 		mockS3API *MockS3API
 
-		shouldSendEvent = func(kind, namespace, reason string) {
+		shouldSendEvent = func(kind, namespace, name, reason string) {
 			events := &v1.EventList{}
-			filter := func(r, k string) func(v1.Event) bool {
-				return func(ev v1.Event) bool { return ev.Reason == r && ev.InvolvedObject.Kind == k }
+			filter := func(r, k, n string) func(v1.Event) bool {
+				return func(ev v1.Event) bool {
+					return ev.Reason == r && ev.InvolvedObject.Kind == k && ev.InvolvedObject.Name == n
+				}
 			}
 
 			Eventually(func() error {
@@ -85,17 +88,17 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 				if err != nil {
 					return err
 				}
-				if testevents.None(events.Items, filter(reason, kind)) {
+				if testevents.None(events.Items, filter(reason, kind, name)) {
 					return fmt.Errorf("events haven't been sent yet")
 				}
 				return nil
 			}, timeout).Should(Succeed())
 
-			bucketCreatedEvents := testevents.Select(events.Items, filter("BucketCreated", kind))
+			bucketCreatedEvents := testevents.Select(events.Items, filter("BucketCreated", kind, name))
 			Expect(bucketCreatedEvents).ToNot(BeEmpty())
 			for _, e := range bucketCreatedEvents {
 				Expect(e.InvolvedObject.Kind).To(Equal(kind))
-				Expect(e.InvolvedObject.Name).To(Equal("s3-foo-bucket"))
+				Expect(e.InvolvedObject.Name).To(Equal(name))
 				Expect(e.InvolvedObject.Namespace).To(Equal(namespace))
 				Expect(e.Type).To(Equal(string(v1.EventTypeNormal)))
 			}
@@ -136,16 +139,22 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 		stopMgr, mgrStopped = StartTestManager(mgr)
 
 	})
+	JustBeforeEach(func() {
+		expectedRequest = reconcile.Request{NamespacedName: types.NamespacedName{Name: objectName, Namespace: "default"}}
+	})
 	Context("Create S3Bucket validation fails", func() {
+		BeforeEach(func() {
+			objectName = "s3-foo-invalid"
+		})
 		AfterEach(func() {
 			Expect(c.Delete(context.TODO(), instance)).NotTo(HaveOccurred())
-			Eventually(requests, timeout).Should(Receive(Equal(invalidRequest)))
+			Eventually(requests, timeout).Should(Receive(Equal(expectedRequest)))
 		})
 		It("Reject object with bucket name", func() {
-			instance = &awsv1beta1.S3Bucket{ObjectMeta: metav1.ObjectMeta{Name: "s3-foo-invalid", Namespace: "default"}}
+			instance = &awsv1beta1.S3Bucket{ObjectMeta: metav1.ObjectMeta{Name: objectName, Namespace: "default"}}
 			err := c.Create(context.TODO(), instance)
 			Expect(err).NotTo(HaveOccurred())
-			Eventually(requests, timeout).Should(Receive(Equal(invalidRequest)))
+			Eventually(requests, timeout).Should(Receive(Equal(expectedRequest)))
 		})
 	})
 	Context("Create S3Bucket", func() {
@@ -153,167 +162,245 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 			instance *awsv1beta1.S3Bucket
 		)
 		AfterEach(func() {
-			mockS3API.EXPECT().DeleteBucket(
-				&s3.DeleteBucketInput{
-					Bucket: aws.String("test-bucket"),
-				}).Return(&s3.DeleteBucketOutput{}, nil).AnyTimes()
-
+			mockS3API.EXPECT().DeleteBucket(&s3.DeleteBucketInput{Bucket: aws.String("test-bucket")}).Return(&s3.DeleteBucketOutput{}, nil)
 			Expect(c.Delete(context.TODO(), instance)).NotTo(HaveOccurred())
 			Eventually(requests, timeout).Should(Receive(Equal(expectedRequest)))
 		})
-		/*
-		It("Create S3Bucket with default attributes", func() {
-			mockS3API.EXPECT().HeadBucket(
-				&s3.HeadBucketInput{
-					Bucket: aws.String("test-bucket"),
-				}).Return(nil, awserr.NewRequestFailure(awserr.New("NotFound", "Not Found", fmt.Errorf("some error")), 404, "F94AFE7597CFC78F"))
+		Context("S3Bucket with default attributes", func() {
+			BeforeEach(func() {
+				objectName = "s3-foo-bucket-1"
+			})
+			It("Create S3Bucket with default attributes", func() {
+				mockS3API.EXPECT().HeadBucket(
+					&s3.HeadBucketInput{
+						Bucket: aws.String("test-bucket"),
+					}).Return(nil, awserr.NewRequestFailure(awserr.New("NotFound", "Not Found", fmt.Errorf("some error")), 404, "F94AFE7597CFC78F"))
 
-			mockS3API.EXPECT().CreateBucket(
-				&s3.CreateBucketInput{
-					Bucket: aws.String("test-bucket"),
-					ACL:    aws.String("private"),
-					CreateBucketConfiguration: &s3.CreateBucketConfiguration{
-						LocationConstraint: aws.String("eu-central-1"),
+				mockS3API.EXPECT().CreateBucket(
+					&s3.CreateBucketInput{
+						Bucket: aws.String("test-bucket"),
+						ACL:    aws.String("private"),
+						CreateBucketConfiguration: &s3.CreateBucketConfiguration{
+							LocationConstraint: aws.String("eu-central-1"),
+						},
+					}).Return(&s3.CreateBucketOutput{Location: aws.String("eu-central-1")}, nil)
+
+				mockS3API.EXPECT().GetBucketPolicy(
+					&s3.GetBucketPolicyInput{
+						Bucket: aws.String("test-bucket"),
+					}).Return(&s3.GetBucketPolicyOutput{Policy: aws.String("")}, nil).Times(2)
+
+				mockS3API.EXPECT().HeadBucket(
+					&s3.HeadBucketInput{
+						Bucket: aws.String("test-bucket"),
+					}).Return(&s3.HeadBucketOutput{}, nil)
+
+				instance = &awsv1beta1.S3Bucket{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      objectName,
+						Namespace: "default",
 					},
-				}).Return(&s3.CreateBucketOutput{Location: aws.String("eu-central-1")}, nil)
+					Spec: awsv1beta1.S3BucketSpec{
+						Bucket: "test-bucket",
+					},
+				}
+				err := c.Create(context.TODO(), instance)
+				Expect(err).NotTo(HaveOccurred())
+				// wait for create reconcile
+				Eventually(requests, timeout).Should(Receive(Equal(expectedRequest)))
+				// wait for reconcile of status
+				Eventually(requests, timeout).Should(Receive(Equal(expectedRequest)))
 
-			mockS3API.EXPECT().GetBucketPolicy(
-				&s3.GetBucketPolicyInput{
-					Bucket: aws.String("test-bucket"),
-				}).Return(&s3.GetBucketPolicyOutput{Policy: aws.String("")}, nil).MinTimes(1)
+				shouldSendEvent("S3Bucket", "default", objectName, "BucketCreated")
 
-			mockS3API.EXPECT().HeadBucket(
-				&s3.HeadBucketInput{
-					Bucket: aws.String("test-bucket"),
-				}).Return(&s3.HeadBucketOutput{}, nil).MinTimes(1)
+				shouldWaitForStatusUpdate(expectedRequest.NamespacedName,
+					awsv1beta1.S3BucketStatus{
+						ARN:                "arn:aws:s3:::test-bucket",
+						LocationConstraint: "eu-central-1",
+						Acl:                "private"})
 
-			instance = &awsv1beta1.S3Bucket{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "s3-foo-bucket",
-					Namespace: "default",
-				},
-				Spec: awsv1beta1.S3BucketSpec{
-					Bucket: "test-bucket",
-				},
-			}
-			err := c.Create(context.TODO(), instance)
-			Expect(err).NotTo(HaveOccurred())
-			Eventually(requests, timeout).Should(Receive(Equal(expectedRequest)))
-
-			shouldSendBucketCreatedEvent("S3Bucket", "default", "BucketCreated")
-
-			shouldWaitForStatusUpdate(expectedRequest.NamespacedName,
-				awsv1beta1.S3BucketStatus{
-					ARN:                "arn:aws:s3:::test-bucket",
-					LocationConstraint: "eu-central-1",
-					Acl:                "private"})
+			})
 		})
-		*/
-		It("Create S3Bucket with policy", func() {
-			mockS3API.EXPECT().HeadBucket(
-				&s3.HeadBucketInput{
-					Bucket: aws.String("test-bucket"),
-				}).Return(nil, awserr.NewRequestFailure(awserr.New("NotFound", "Not Found", fmt.Errorf("some error")), 404, "F94AFE7597CFC78F"))
+		Context("S3Bucket with policy", func() {
+			BeforeEach(func() {
+				objectName = "s3-foo-bucket-2"
+			})
+			It("Create, update and delete S3Bucket policy", func() {
+				mockS3API.EXPECT().HeadBucket(
+					&s3.HeadBucketInput{
+						Bucket: aws.String("test-bucket"),
+					}).Return(nil, awserr.NewRequestFailure(awserr.New("NotFound", "Not Found", fmt.Errorf("some error")), 404, "F94AFE7597CFC78F"))
 
-			mockS3API.EXPECT().HeadBucket(
-				&s3.HeadBucketInput{
-					Bucket: aws.String("test-bucket"),
-				}).Return(&s3.HeadBucketOutput{}, nil).MinTimes(1)
+				mockS3API.EXPECT().HeadBucket(
+					&s3.HeadBucketInput{
+						Bucket: aws.String("test-bucket"),
+					}).Return(&s3.HeadBucketOutput{}, nil).Times(3)
 
-			mockS3API.EXPECT().CreateBucket(
-				&s3.CreateBucketInput{
-					Bucket: aws.String("test-bucket"),
-					ACL:    aws.String("private"),
-					CreateBucketConfiguration: &s3.CreateBucketConfiguration{
-						LocationConstraint: aws.String("eu-central-1"),
+				mockS3API.EXPECT().CreateBucket(
+					&s3.CreateBucketInput{
+						Bucket: aws.String("test-bucket"),
+						ACL:    aws.String("private"),
+						CreateBucketConfiguration: &s3.CreateBucketConfiguration{
+							LocationConstraint: aws.String("eu-central-1"),
+						},
+					}).Return(&s3.CreateBucketOutput{Location: aws.String("eu-central-1")}, nil)
+
+				mockS3API.EXPECT().GetBucketPolicy(
+					&s3.GetBucketPolicyInput{
+						Bucket: aws.String("test-bucket"),
+					}).Return(&s3.GetBucketPolicyOutput{Policy: aws.String("")}, nil)
+
+				policyAllow := `{"Version": "2012-10-17","Statement": [{"Effect": "Allow"}]}`
+				mockS3API.EXPECT().PutBucketPolicy(
+					&s3.PutBucketPolicyInput{
+						Bucket: aws.String("test-bucket"),
+						Policy: aws.String(policyAllow),
+					}).Return(&s3.PutBucketPolicyOutput{}, nil)
+
+				mockS3API.EXPECT().GetBucketPolicy(
+					&s3.GetBucketPolicyInput{
+						Bucket: aws.String("test-bucket"),
+					}).Return(&s3.GetBucketPolicyOutput{Policy: aws.String(policyAllow)}, nil)
+
+				instance = &awsv1beta1.S3Bucket{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      objectName,
+						Namespace: "default",
 					},
-				}).Return(&s3.CreateBucketOutput{Location: aws.String("eu-central-1")}, nil)
+					Spec: awsv1beta1.S3BucketSpec{
+						Bucket: "test-bucket",
+						Policy: policyAllow,
+					},
+				}
+				err := c.Create(context.TODO(), instance)
+				Expect(err).NotTo(HaveOccurred())
+				// wait for create reconcile
+				Eventually(requests, timeout).Should(Receive(Equal(expectedRequest)))
+				// wait for reconcile of status
+				Eventually(requests, timeout).Should(Receive(Equal(expectedRequest)))
 
-			mockS3API.EXPECT().GetBucketPolicy(
-				&s3.GetBucketPolicyInput{
-					Bucket: aws.String("test-bucket"),
-				}).Return(&s3.GetBucketPolicyOutput{Policy: aws.String("")}, nil)
+				shouldWaitForStatusUpdate(expectedRequest.NamespacedName,
+					awsv1beta1.S3BucketStatus{
+						ARN:                "arn:aws:s3:::test-bucket",
+						LocationConstraint: "eu-central-1",
+						Acl:                "private"})
 
-			policyAllow := `{"Version": "2012-10-17","Statement": [{"Effect": "Allow"}]}`
-			mockS3API.EXPECT().PutBucketPolicy(
-				&s3.PutBucketPolicyInput{
-					Bucket: aws.String("test-bucket"),
-					Policy: aws.String(policyAllow),
-				}).Return(&s3.PutBucketPolicyOutput{}, nil)
+				shouldSendEvent("S3Bucket", "default", objectName, "BucketCreated")
+				shouldSendEvent("S3Bucket", "default", objectName, "BucketPolicyCreated")
 
-			mockS3API.EXPECT().GetBucketPolicy(
-				&s3.GetBucketPolicyInput{
-					Bucket: aws.String("test-bucket"),
-				}).Return(&s3.GetBucketPolicyOutput{Policy: aws.String(policyAllow)}, nil)
+				// UPDATE policy
+				mockS3API.EXPECT().GetBucketPolicy(
+					&s3.GetBucketPolicyInput{
+						Bucket: aws.String("test-bucket"),
+					}).Return(&s3.GetBucketPolicyOutput{Policy: aws.String(policyAllow)}, nil)
 
+				policyDisallow := `{"Version": "2012-10-17","Statement": [{"Effect": "Disallow"}]}`
+				mockS3API.EXPECT().PutBucketPolicy(
+					&s3.PutBucketPolicyInput{
+						Bucket: aws.String("test-bucket"),
+						Policy: aws.String(policyDisallow),
+					}).Return(&s3.PutBucketPolicyOutput{}, nil)
 
-			instance = &awsv1beta1.S3Bucket{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "s3-foo-bucket",
-					Namespace: "default",
-				},
-				Spec: awsv1beta1.S3BucketSpec{
-					Bucket: "test-bucket",
-					Policy: policyAllow,
-				},
-			}
-			err := c.Create(context.TODO(), instance)
-			Expect(err).NotTo(HaveOccurred())
-			// wait for create reconcile
-			Eventually(requests, timeout).Should(Receive(Equal(expectedRequest)))
-			// wait for reconcile of status
-			Eventually(requests, timeout).Should(Receive(Equal(expectedRequest)))
+				// get latest version of the object
+				Eventually(func() error { return c.Get(context.TODO(), expectedRequest.NamespacedName, instance) }, timeout).Should(Succeed())
+				instance.Spec.Policy = policyDisallow
+				err = c.Update(context.TODO(), instance)
+				Expect(err).NotTo(HaveOccurred())
+				// wait for update reconcile
+				Eventually(requests, timeout).Should(Receive(Equal(expectedRequest)))
+				shouldSendEvent("S3Bucket", "default", objectName, "BucketPolicyUpdated")
 
-			shouldWaitForStatusUpdate(expectedRequest.NamespacedName,
-				awsv1beta1.S3BucketStatus{
-					ARN:                "arn:aws:s3:::test-bucket",
-					LocationConstraint: "eu-central-1",
-					Acl:                "private"})
+				// DELETE policy
+				mockS3API.EXPECT().GetBucketPolicy(
+					&s3.GetBucketPolicyInput{
+						Bucket: aws.String("test-bucket"),
+					}).Return(&s3.GetBucketPolicyOutput{Policy: aws.String(policyDisallow)}, nil)
 
-			shouldSendEvent("S3Bucket", "default", "BucketCreated")
-			shouldSendEvent("S3Bucket", "default", "BucketPolicyCreated")
+				mockS3API.EXPECT().DeleteBucketPolicy(
+					&s3.DeleteBucketPolicyInput{
+						Bucket: aws.String("test-bucket"),
+					}).Return(&s3.DeleteBucketPolicyOutput{}, nil)
 
-			// UPDATE policy
-			mockS3API.EXPECT().GetBucketPolicy(
-				&s3.GetBucketPolicyInput{
-					Bucket: aws.String("test-bucket"),
-				}).Return(&s3.GetBucketPolicyOutput{Policy: aws.String(policyAllow)}, nil)
+				// get latest version of the object
+				Eventually(func() error { return c.Get(context.TODO(), expectedRequest.NamespacedName, instance) }, timeout).Should(Succeed())
+				instance.Spec.Policy = ""
+				err = c.Update(context.TODO(), instance)
+				Expect(err).NotTo(HaveOccurred())
+				Eventually(requests, timeout).Should(Receive(Equal(expectedRequest)))
+				shouldSendEvent("S3Bucket", "default", objectName, "BucketPolicyDeleted")
+			})
+		})
+		Context("S3Bucket ACL", func() {
+			BeforeEach(func() {
+				objectName = "s3-foo-bucket-3"
+			})
+			It("Update S3Bucket canned ACL", func() {
+				mockS3API.EXPECT().HeadBucket(
+					&s3.HeadBucketInput{
+						Bucket: aws.String("test-bucket"),
+					}).Return(nil, awserr.NewRequestFailure(awserr.New("NotFound", "Not Found", fmt.Errorf("some error")), 404, "F94AFE7597CFC78F"))
 
+				mockS3API.EXPECT().CreateBucket(
+					&s3.CreateBucketInput{
+						Bucket: aws.String("test-bucket"),
+						ACL:    aws.String("private"),
+						CreateBucketConfiguration: &s3.CreateBucketConfiguration{
+							LocationConstraint: aws.String("eu-central-1"),
+						},
+					}).Return(&s3.CreateBucketOutput{Location: aws.String("eu-central-1")}, nil)
 
-			policyDisallow := `{"Version": "2012-10-17","Statement": [{"Effect": "Disallow"}]}`
-			mockS3API.EXPECT().PutBucketPolicy(
-				&s3.PutBucketPolicyInput{
-					Bucket: aws.String("test-bucket"),
-					Policy: aws.String(policyDisallow),
-				}).Return(&s3.PutBucketPolicyOutput{}, nil)
+				mockS3API.EXPECT().GetBucketPolicy(
+					&s3.GetBucketPolicyInput{
+						Bucket: aws.String("test-bucket"),
+					}).Return(&s3.GetBucketPolicyOutput{Policy: aws.String("")}, nil).Times(4)
 
-			// get latest version of the object
-			Eventually(func() error { return c.Get(context.TODO(), expectedRequest.NamespacedName, instance) }, timeout).Should(Succeed())
-			instance.Spec.Policy = policyDisallow
-			err = c.Update(context.TODO(), instance)
-			Expect(err).NotTo(HaveOccurred())
-			// wait for update reconcile
-			Eventually(requests, timeout).Should(Receive(Equal(expectedRequest)))
-			shouldSendEvent("S3Bucket", "default", "BucketPolicyUpdated")
+				mockS3API.EXPECT().HeadBucket(
+					&s3.HeadBucketInput{
+						Bucket: aws.String("test-bucket"),
+					}).Return(&s3.HeadBucketOutput{}, nil).Times(3)
 
-			// DELETE policy
-			mockS3API.EXPECT().GetBucketPolicy(
-				&s3.GetBucketPolicyInput{
-					Bucket: aws.String("test-bucket"),
-				}).Return(&s3.GetBucketPolicyOutput{Policy: aws.String(policyDisallow)}, nil)
+				instance = &awsv1beta1.S3Bucket{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      objectName,
+						Namespace: "default",
+					},
+					Spec: awsv1beta1.S3BucketSpec{
+						Bucket: "test-bucket",
+					},
+				}
+				err := c.Create(context.TODO(), instance)
+				Expect(err).NotTo(HaveOccurred())
+				// wait for create reconcile
+				Eventually(requests, timeout).Should(Receive(Equal(expectedRequest)))
+				// wait for reconcile of status
+				Eventually(requests, timeout).Should(Receive(Equal(expectedRequest)))
 
-			mockS3API.EXPECT().DeleteBucketPolicy(
-				&s3.DeleteBucketPolicyInput{
-					Bucket: aws.String("test-bucket"),
-				}).Return(&s3.DeleteBucketPolicyOutput{}, nil)
+				shouldSendEvent("S3Bucket", "default", objectName, "BucketCreated")
 
-			// get latest version of the object
-			Eventually(func() error { return c.Get(context.TODO(), expectedRequest.NamespacedName, instance) }, timeout).Should(Succeed())
-			instance.Spec.Policy = ""
-			err = c.Update(context.TODO(), instance)
-			Expect(err).NotTo(HaveOccurred())
-			Eventually(requests, timeout).Should(Receive(Equal(expectedRequest)))
-			shouldSendEvent("S3Bucket", "default", "BucketPolicyDeleted")
+				shouldWaitForStatusUpdate(expectedRequest.NamespacedName,
+					awsv1beta1.S3BucketStatus{
+						ARN:                "arn:aws:s3:::test-bucket",
+						LocationConstraint: "eu-central-1",
+						Acl:                "private"})
+
+				// Update ACL
+				mockS3API.EXPECT().PutBucketAcl(
+					&s3.PutBucketAclInput{
+						Bucket: aws.String("test-bucket"),
+						ACL:    aws.String("public-read"),
+					}).Return(&s3.PutBucketAclOutput{}, nil)
+
+				// get latest version of the object
+				Eventually(func() error { return c.Get(context.TODO(), expectedRequest.NamespacedName, instance) }, timeout).Should(Succeed())
+				instance.Spec.Acl = "public-read"
+				err = c.Update(context.TODO(), instance)
+				Expect(err).NotTo(HaveOccurred())
+				// wait for create reconcile
+				Eventually(requests, timeout).Should(Receive(Equal(expectedRequest)))
+				// wait for reconcile of status
+				Eventually(requests, timeout).Should(Receive(Equal(expectedRequest)))
+				shouldSendEvent("S3Bucket", "default", objectName, "PutBucketAcl")
+			})
 		})
 	})
 
