@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"github.com/aws/aws-sdk-go/service/s3/s3iface"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
+	"reflect"
 	"regexp"
 	"strings"
 
@@ -354,6 +355,9 @@ func (r ReconcileS3Bucket) checkBucketExists(instance *awsv1beta1.S3Bucket) (boo
 }
 
 func (r ReconcileS3Bucket) reconcileBucket(instance *awsv1beta1.S3Bucket) *awsclient.RetryError {
+	if err := r.reconcileBucketTags(instance); err != nil {
+		return err
+	}
 	if err := r.reconcileBucketPolicy(instance); err != nil {
 		return err
 	}
@@ -361,6 +365,66 @@ func (r ReconcileS3Bucket) reconcileBucket(instance *awsv1beta1.S3Bucket) *awscl
 		return err
 	}
 	return nil
+}
+func (r ReconcileS3Bucket) reconcileBucketTags(instance *awsv1beta1.S3Bucket) *awsclient.RetryError {
+	bucket := instance.Spec.Bucket
+	currentTags, retryError := r.readyBucketTags(bucket)
+	if retryError != nil {
+		return retryError
+	}
+	desiredTags := instance.Spec.Tags
+	if reflect.DeepEqual(currentTags, desiredTags) {
+		return nil
+	}
+	create, remove := diffTagsS3(currentTags, desiredTags)
+	if len(remove) > 0 {
+		logInfof("Delete bucket tagging (%s):\n%s", bucket, currentTags)
+		_, err := r.s3conn.DeleteBucketTagging(&s3.DeleteBucketTaggingInput{Bucket: aws.String(bucket)})
+		if err != nil {
+			if awsclient.IsAWSCode(err, []string{s3.ErrCodeNoSuchBucket, "OperationAborted"}) {
+				return awsclient.RetryableError(err, "DeleteBucketTaggingFailed")
+			}
+			return awsclient.NonRetryableError(fmt.Errorf("error deleting S3 Bucket tagging (%s): %s", bucket, err), "DeleteBucketTaggingFailed")
+		}
+	}
+	if len(create) > 0 {
+		logInfof("Put bucket tagging (%s): %s", bucket, desiredTags)
+		_, err := r.s3conn.PutBucketTagging(&s3.PutBucketTaggingInput{
+			Bucket:  aws.String(bucket),
+			Tagging: &s3.Tagging{TagSet: tagsFromMapS3(create)},
+		})
+		if err != nil {
+			if awsclient.IsAWSCode(err, []string{s3.ErrCodeNoSuchBucket, "OperationAborted"}) {
+				return awsclient.RetryableError(err, "PutBucketTaggingFailed")
+			}
+			return awsclient.NonRetryableError(fmt.Errorf("error putting S3 Bucket tagging (%s): %s", bucket, err), "PutBucketTaggingFailed")
+		}
+	}
+	if len(remove) > 0 || len(create) > 0 {
+		var reason string
+		if len(create) > 0 && len(remove) == 0 {
+			reason = "BucketTaggingCreated"
+		} else if len(create) == 0 && len(remove) > 0 {
+			reason = "BucketTaggingDeleted"
+		} else {
+			reason = "BucketTaggingUpdated"
+		}
+		r.sendEvent(instance, apiv1.EventTypeNormal, reason, "Bucket tagging changed")
+	}
+	return nil
+}
+
+func (r ReconcileS3Bucket) readyBucketTags(bucket string) (map[string]string, *awsclient.RetryError) {
+	getBucketTaggingOutput, err := r.s3conn.GetBucketTagging(&s3.GetBucketTaggingInput{
+		Bucket: aws.String(bucket),
+	})
+	if ec2err, ok := err.(awserr.Error); ok && ec2err.Code() == "NoSuchTagSet" {
+		// There is no tag set associated with the bucket.
+		return map[string]string{}, nil
+	} else if err != nil {
+		return nil, awsclient.NonRetryableError(fmt.Errorf("error reading S3 Bucket tags (%s): %s", bucket, err), "GetBucketTaggingFailed")
+	}
+	return tagsToMapS3(getBucketTaggingOutput.TagSet), nil
 }
 
 func (r ReconcileS3Bucket) reconcileBucketAcl(instance *awsv1beta1.S3Bucket) *awsclient.RetryError {
@@ -415,7 +479,7 @@ func (r ReconcileS3Bucket) reconcileBucketPolicy(instance *awsv1beta1.S3Bucket) 
 
 func (r ReconcileS3Bucket) readyBucketPolicy(bucket string) (string, *awsclient.RetryError) {
 	// read policy
-	getBucketPolicyInputOutput, err := r.s3conn.GetBucketPolicy(&s3.GetBucketPolicyInput{
+	getBucketPolicyOutput, err := r.s3conn.GetBucketPolicy(&s3.GetBucketPolicyInput{
 		Bucket: aws.String(bucket),
 	})
 	if err != nil {
@@ -427,8 +491,8 @@ func (r ReconcileS3Bucket) readyBucketPolicy(bucket string) (string, *awsclient.
 		}
 		return "", awsclient.NonRetryableError(fmt.Errorf("error reading S3 Bucket policy (%s): %s", bucket, err), "GetBucketPolicyFailed")
 	}
-	if getBucketPolicyInputOutput != nil && getBucketPolicyInputOutput.Policy != nil {
-		policy := *getBucketPolicyInputOutput.Policy
+	if getBucketPolicyOutput != nil && getBucketPolicyOutput.Policy != nil {
+		policy := *getBucketPolicyOutput.Policy
 		if policy != "" {
 			policy, err = structure.NormalizeJsonString(policy)
 			if err != nil {

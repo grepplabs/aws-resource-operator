@@ -132,6 +132,12 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 					},
 				}).Return(&s3.CreateBucketOutput{Location: aws.String("eu-central-1")}, nil)
 		}
+		mockGetBucketTagging = func(tags map[string]string, times int) {
+			mockS3API.EXPECT().GetBucketTagging(
+				&s3.GetBucketTaggingInput{
+					Bucket: aws.String("test-bucket"),
+				}).Return(&s3.GetBucketTaggingOutput{TagSet: tagsFromMapS3(tags)}, nil).Times(times)
+		}
 		mockGetBucketPolicy = func(policy string, times int) {
 			mockS3API.EXPECT().GetBucketPolicy(
 				&s3.GetBucketPolicyInput{
@@ -201,6 +207,7 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 			It("Create S3Bucket with default attributes", func() {
 				mockHeadBucketNotFound()
 				mockCreateBucket()
+				mockGetBucketTagging(map[string]string{}, 2)
 				mockGetBucketPolicy("", 2)
 				mockHeadBucket(1)
 
@@ -238,6 +245,7 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 				mockHeadBucketNotFound()
 				mockCreateBucket()
 				mockHeadBucket(3)
+				mockGetBucketTagging(map[string]string{}, 4)
 				mockGetBucketPolicy("", 1)
 
 				policyAllow := `{"Version": "2012-10-17","Statement": [{"Effect": "Allow"}]}`
@@ -318,6 +326,7 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 			It("Update S3Bucket canned ACL", func() {
 				mockHeadBucketNotFound()
 				mockCreateBucket()
+				mockGetBucketTagging(map[string]string{}, 4)
 				mockGetBucketPolicy("", 4)
 				mockHeadBucket(3)
 
@@ -362,6 +371,97 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 				// wait for reconcile of status
 				Eventually(requests, timeout).Should(Receive(Equal(expectedRequest)))
 				shouldSendEvent("S3Bucket", "default", objectName, "PutBucketAcl")
+			})
+		})
+		Context("S3Bucket with tagging", func() {
+			BeforeEach(func() {
+				objectName = "s3-foo-bucket-4"
+			})
+			It("Create, update and delete S3Bucket tagging", func() {
+				mockHeadBucketNotFound()
+				mockCreateBucket()
+				mockHeadBucket(3)
+				mockGetBucketTagging(map[string]string{}, 1)
+				mockGetBucketPolicy("", 4)
+
+				tagsCreate := map[string]string{"tag1": "value1"}
+				mockS3API.EXPECT().PutBucketTagging(
+					&s3.PutBucketTaggingInput{
+						Bucket: aws.String("test-bucket"),
+						Tagging: &s3.Tagging{
+							TagSet: tagsFromMapS3(tagsCreate),
+						},
+					}).Return(&s3.PutBucketTaggingOutput{}, nil)
+
+				mockGetBucketTagging(tagsCreate, 1)
+				instance = &awsv1beta1.S3Bucket{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      objectName,
+						Namespace: "default",
+					},
+					Spec: awsv1beta1.S3BucketSpec{
+						Bucket: "test-bucket",
+						Tags:   tagsCreate,
+					},
+				}
+				err := c.Create(context.TODO(), instance)
+				Expect(err).NotTo(HaveOccurred())
+				// wait for create reconcile
+				Eventually(requests, timeout).Should(Receive(Equal(expectedRequest)))
+				// wait for reconcile of status
+				Eventually(requests, timeout).Should(Receive(Equal(expectedRequest)))
+
+				shouldWaitForStatusUpdate(expectedRequest.NamespacedName,
+					awsv1beta1.S3BucketStatus{
+						ARN:                "arn:aws:s3:::test-bucket",
+						LocationConstraint: "eu-central-1",
+						Acl:                "private"})
+
+				shouldSendEvent("S3Bucket", "default", objectName, "BucketCreated")
+				shouldSendEvent("S3Bucket", "default", objectName, "BucketTaggingCreated")
+
+				// UPDATE tagging
+				mockGetBucketTagging(tagsCreate, 1)
+
+				tagsUpdate := map[string]string{"tag2": "value2"}
+
+				mockS3API.EXPECT().DeleteBucketTagging(
+					&s3.DeleteBucketTaggingInput{
+						Bucket: aws.String("test-bucket"),
+					}).Return(&s3.DeleteBucketTaggingOutput{}, nil)
+
+				mockS3API.EXPECT().PutBucketTagging(
+					&s3.PutBucketTaggingInput{
+						Bucket: aws.String("test-bucket"),
+						Tagging: &s3.Tagging{
+							TagSet: tagsFromMapS3(tagsUpdate),
+						},
+					}).Return(&s3.PutBucketTaggingOutput{}, nil)
+
+				// get latest version of the object
+				Eventually(func() error { return c.Get(context.TODO(), expectedRequest.NamespacedName, instance) }, timeout).Should(Succeed())
+				instance.Spec.Tags = tagsUpdate
+				err = c.Update(context.TODO(), instance)
+				Expect(err).NotTo(HaveOccurred())
+				// wait for update reconcile
+				Eventually(requests, timeout).Should(Receive(Equal(expectedRequest)))
+				shouldSendEvent("S3Bucket", "default", objectName, "BucketTaggingUpdated")
+
+				// DELETE tagging
+				mockGetBucketTagging(tagsUpdate, 1)
+
+				mockS3API.EXPECT().DeleteBucketTagging(
+					&s3.DeleteBucketTaggingInput{
+						Bucket: aws.String("test-bucket"),
+					}).Return(&s3.DeleteBucketTaggingOutput{}, nil)
+
+				// get latest version of the object
+				Eventually(func() error { return c.Get(context.TODO(), expectedRequest.NamespacedName, instance) }, timeout).Should(Succeed())
+				instance.Spec.Tags = map[string]string{}
+				err = c.Update(context.TODO(), instance)
+				Expect(err).NotTo(HaveOccurred())
+				Eventually(requests, timeout).Should(Receive(Equal(expectedRequest)))
+				shouldSendEvent("S3Bucket", "default", objectName, "BucketTaggingDeleted")
 			})
 		})
 	})

@@ -5,7 +5,6 @@ metadata:
     controller-tools.k8s.io: "1.0"
   name: s3bucket-sample
 spec:
-  # Add fields here
   bucket: fm-new-aws-operator-bucket2
   region: eu-central-1
   deleteStrategy: Delete
