@@ -20,4 +20,5 @@ In contrast to the [aws-service-operator](https://github.com/awslabs/aws-service
 - [canned ACL](https://docs.aws.amazon.com/cli/latest/reference/s3api/put-bucket-acl.html)
     * reconciliation is based on object status
     * check [predefined set of grantees and permissions](https://docs.aws.amazon.com/AmazonS3/latest/dev/acl-overview.html#canned-acl)
-- [tags](https://docs.aws.amazon.com/cli/latest/reference/s3api/get-bucket-tagging.html)
+- [tags](https://docs.aws.amazon.com/cli/latest/reference/s3api/put-bucket-tagging.html)
+- [encryption](https://docs.aws.amazon.com/cli/latest/reference/s3api/put-bucket-encryption.html)

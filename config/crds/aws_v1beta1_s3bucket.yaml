@@ -62,6 +62,39 @@ spec:
             region:
               description: The region to use. Overrides config/env settings
               type: string
+            serverSideEncryptionConfiguration:
+              description: A server-side encryption configuration
+              properties:
+                rule:
+                  description: Container for information about a particular server-side
+                    encryption configuration rule.
+                  properties:
+                    applyServerSideEncryptionByDefault:
+                      description: Describes the default server-side encryption to
+                        apply to new objects in the bucket. If Put Object request
+                        does not specify any server-side encryption, this default
+                        encryption will be applied.
+                      properties:
+                        kmsMasterKeyID:
+                          description: KMS master key ID to use for the default encryption.
+                            This parameter is allowed if SSEAlgorithm is aws:kms.
+                          type: string
+                        sseAlgorithm:
+                          description: Server-side encryption algorithm to use for
+                            the default encryption. SSEAlgorithm is a required field.
+                          enum:
+                          - AES256
+                          - aws:kms
+                          type: string
+                      required:
+                      - sseAlgorithm
+                      type: object
+                  required:
+                  - applyServerSideEncryptionByDefault
+                  type: object
+              required:
+              - rule
+              type: object
             tags:
               description: A mapping of tags to assign to the bucket
               type: object

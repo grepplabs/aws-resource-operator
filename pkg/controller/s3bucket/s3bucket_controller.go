@@ -364,6 +364,9 @@ func (r ReconcileS3Bucket) reconcileBucket(instance *awsv1beta1.S3Bucket) *awscl
 	if err := r.reconcileBucketAcl(instance); err != nil {
 		return err
 	}
+	if err := r.reconcileBucketEncryption(instance); err != nil {
+		return err
+	}
 	return nil
 }
 func (r ReconcileS3Bucket) reconcileBucketTags(instance *awsv1beta1.S3Bucket) *awsclient.RetryError {
@@ -540,6 +543,104 @@ func (r ReconcileS3Bucket) updateBucketPolicy(instance *awsv1beta1.S3Bucket, cur
 		r.sendEvent(instance, apiv1.EventTypeNormal, "BucketPolicyDeleted", "Bucket policy deleted")
 	}
 	return nil
+}
+
+func (r ReconcileS3Bucket) reconcileBucketEncryption(instance *awsv1beta1.S3Bucket) *awsclient.RetryError {
+	bucket := instance.Spec.Bucket
+	currentEncryption, retryError := r.readyBucketEncryption(bucket)
+	if retryError != nil {
+		return retryError
+	}
+	var desiredEncryption *awsv1beta1.S3ServerSideEncryptionByDefault
+	if instance.Spec.ServerSideEncryptionConfiguration != nil {
+		desiredEncryption = &instance.Spec.ServerSideEncryptionConfiguration.Rule.ApplyServerSideEncryptionByDefault
+	}
+	if currentEncryption == nil && desiredEncryption == nil {
+		return nil
+	} else if currentEncryption == nil && desiredEncryption != nil {
+		log.Info(fmt.Sprintf("Creating bucket encryption (%s,%s)", desiredEncryption.SSEAlgorithm, desiredEncryption.KMSMasterKeyID), "bucket", bucket)
+		err := r.updateBucketEncryption(bucket, *desiredEncryption)
+		if err != nil {
+			if awsclient.IsAWSCode(err, []string{s3.ErrCodeNoSuchBucket}) {
+				return awsclient.RetryableError(err, "CreateBucketEncryptionFailed")
+			}
+			return awsclient.NonRetryableError(fmt.Errorf("error create S3 Bucket encryption (%s): %s", bucket, err), "CreateBucketEncryptionFailed")
+		}
+		r.sendEvent(instance, apiv1.EventTypeNormal, "BucketEncryptionCreated", "Bucket encryption deleted")
+	} else if currentEncryption != nil && desiredEncryption == nil {
+		log.Info(fmt.Sprintf("Deleting bucket encryption (%s,%s)", currentEncryption.SSEAlgorithm, currentEncryption.KMSMasterKeyID), "bucket", bucket)
+		_, err := r.s3conn.DeleteBucketEncryption(&s3.DeleteBucketEncryptionInput{
+			Bucket: aws.String(bucket),
+		})
+		if err != nil {
+			if awsclient.IsAWSCode(err, []string{s3.ErrCodeNoSuchBucket}) {
+				return awsclient.RetryableError(err, "DeleteBucketEncryptionFailed")
+			}
+			return awsclient.NonRetryableError(fmt.Errorf("error delete S3 Bucket encryption (%s): %s", bucket, err), "DeleteBucketEncryptionFailed")
+		}
+		r.sendEvent(instance, apiv1.EventTypeNormal, "BucketEncryptionDeleted", "Bucket policy deleted")
+	} else if !reflect.DeepEqual(currentEncryption, desiredEncryption) {
+		log.Info(fmt.Sprintf("Updating bucket encryption from (%s,%s) to (%s,%s)", currentEncryption.SSEAlgorithm, currentEncryption.KMSMasterKeyID, desiredEncryption.SSEAlgorithm, desiredEncryption.KMSMasterKeyID), "bucket", bucket)
+		err := r.updateBucketEncryption(bucket, *desiredEncryption)
+		if err != nil {
+			if awsclient.IsAWSCode(err, []string{s3.ErrCodeNoSuchBucket}) {
+				return awsclient.RetryableError(err, "UpdateBucketEncryptionFailed")
+			}
+			return awsclient.NonRetryableError(fmt.Errorf("error update S3 Bucket encryption (%s): %s", bucket, err), "UpdateBucketEncryptionFailed")
+		}
+		r.sendEvent(instance, apiv1.EventTypeNormal, "BucketEncryptionUpdated", "Bucket encryption updated")
+	} else {
+		return nil
+	}
+	return nil
+}
+
+func (r ReconcileS3Bucket) updateBucketEncryption(bucket string, desiredEncryption awsv1beta1.S3ServerSideEncryptionByDefault) error {
+	var kmsMasterKeyID *string
+	if desiredEncryption.KMSMasterKeyID != "" {
+		kmsMasterKeyID = aws.String(desiredEncryption.KMSMasterKeyID)
+	}
+
+	_, err := r.s3conn.PutBucketEncryption(&s3.PutBucketEncryptionInput{
+		Bucket: aws.String(bucket),
+		ServerSideEncryptionConfiguration: &s3.ServerSideEncryptionConfiguration{
+			Rules: []*s3.ServerSideEncryptionRule{
+				{
+					ApplyServerSideEncryptionByDefault: &s3.ServerSideEncryptionByDefault{
+						SSEAlgorithm:   aws.String(desiredEncryption.SSEAlgorithm),
+						KMSMasterKeyID: kmsMasterKeyID,
+					},
+				},
+			},
+		},
+	})
+	return err
+}
+
+func (r ReconcileS3Bucket) readyBucketEncryption(bucket string) (*awsv1beta1.S3ServerSideEncryptionByDefault, *awsclient.RetryError) {
+	// read bucket encryption
+	encryption, err := r.s3conn.GetBucketEncryption(&s3.GetBucketEncryptionInput{
+		Bucket: aws.String(bucket),
+	})
+	if err != nil {
+		if awsclient.IsAWSCode(err, []string{s3.ErrCodeNoSuchBucket}) {
+			return nil, awsclient.RetryableError(err, "GetBucketEncryptionFailed")
+		}
+		if !awsclient.IsAWSCode(err, []string{"ServerSideEncryptionConfigurationNotFoundError"}) {
+			return nil, awsclient.NonRetryableError(fmt.Errorf("error reading S3 Bucket encryption (%s): %s", bucket, err), "GetBucketEncryptionFailed")
+		}
+	}
+	if encryption != nil && encryption.ServerSideEncryptionConfiguration != nil {
+		for _, v := range encryption.ServerSideEncryptionConfiguration.Rules {
+			if v.ApplyServerSideEncryptionByDefault != nil && v.ApplyServerSideEncryptionByDefault.SSEAlgorithm != nil {
+				return &awsv1beta1.S3ServerSideEncryptionByDefault{
+					KMSMasterKeyID: aws.StringValue(v.ApplyServerSideEncryptionByDefault.KMSMasterKeyID),
+					SSEAlgorithm:   aws.StringValue(v.ApplyServerSideEncryptionByDefault.SSEAlgorithm),
+				}, nil
+			}
+		}
+	}
+	return nil, nil
 }
 
 func (r ReconcileS3Bucket) createBucket(instance *awsv1beta1.S3Bucket) *awsclient.RetryError {

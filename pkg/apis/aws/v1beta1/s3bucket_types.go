@@ -47,6 +47,9 @@ type S3BucketSpec struct {
 	// +optional
 	// +kubebuilder:validation:Enum=Created,Acquire
 	OwnershipStrategy OwnershipStrategyType `json:"ownershipStrategy,omitempty"`
+	// A server-side encryption configuration
+	// +optional
+	ServerSideEncryptionConfiguration *S3BucketServerSideEncryptionConfiguration `json:"serverSideEncryptionConfiguration,omitempty"`
 }
 
 type DeleteStrategyType string
@@ -77,6 +80,32 @@ type S3BucketStatus struct {
 	LocationConstraint string `json:"locationConstraint,omitempty"`
 	// The canned ACL
 	Acl string `json:"acl,omitempty"`
+}
+
+// Container for server-side encryption configuration rules. Currently S3 supports one rule only.
+type S3BucketServerSideEncryptionConfiguration struct {
+	// Container for information about a particular server-side encryption configuration rule.
+	Rule S3ServerSideEncryptionRule `json:"rule"`
+}
+
+// Container for information about a particular server-side encryption configuration rule.
+type S3ServerSideEncryptionRule struct {
+	// Describes the default server-side encryption to apply to new objects in the
+	// bucket. If Put Object request does not specify any server-side encryption,
+	// this default encryption will be applied.
+	ApplyServerSideEncryptionByDefault S3ServerSideEncryptionByDefault `json:"applyServerSideEncryptionByDefault"`
+}
+
+// Describes the default server-side encryption to apply to new objects in the
+// bucket. If Put Object request does not specify any server-side encryption,
+// this default encryption will be applied.
+type S3ServerSideEncryptionByDefault struct {
+	// Server-side encryption algorithm to use for the default encryption. SSEAlgorithm is a required field.
+	// +kubebuilder:validation:Enum=AES256,aws:kms
+	SSEAlgorithm string `json:"sseAlgorithm"`
+	// KMS master key ID to use for the default encryption. This parameter is allowed if SSEAlgorithm is aws:kms.
+	// +optional
+	KMSMasterKeyID string `json:"kmsMasterKeyID,omitempty"`
 }
 
 // +genclient

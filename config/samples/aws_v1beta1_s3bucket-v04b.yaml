@@ -1,0 +1,16 @@
+apiVersion: aws.grepplabs.com/v1beta1
+kind: S3Bucket
+metadata:
+  labels:
+    controller-tools.k8s.io: "1.0"
+  name: s3bucket-sample
+spec:
+  bucket: fm-new-aws-operator-bucket2
+  region: eu-central-1
+  deleteStrategy: Delete
+  ownershipStrategy: Created
+  serverSideEncryptionConfiguration:
+    rule:
+      applyServerSideEncryptionByDefault:
+        sseAlgorithm: aws:kms
+        kmsMasterKeyID: arn:aws:kms:eu-central-1:1234/5678example
