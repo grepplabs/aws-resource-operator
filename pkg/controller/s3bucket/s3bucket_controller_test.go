@@ -150,6 +150,41 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 					Bucket: aws.String("test-bucket"),
 				}).Return(&s3.HeadBucketOutput{}, nil).Times(times)
 		}
+		mockGetBucketEncryption = func(sseAlgorithm, kmsMasterKeyID string, times int) {
+			var serverSideEncryptionConfiguration *s3.ServerSideEncryptionConfiguration
+			if sseAlgorithm != "" {
+				serverSideEncryptionConfiguration = &s3.ServerSideEncryptionConfiguration{
+					Rules: []*s3.ServerSideEncryptionRule{
+						{
+							ApplyServerSideEncryptionByDefault: &s3.ServerSideEncryptionByDefault{
+								SSEAlgorithm:   aws.String(sseAlgorithm),
+								KMSMasterKeyID: aws.String(kmsMasterKeyID),
+							},
+						},
+					},
+				}
+			}
+			mockS3API.EXPECT().GetBucketEncryption(&s3.GetBucketEncryptionInput{
+				Bucket: aws.String("test-bucket"),
+			}).Return(&s3.GetBucketEncryptionOutput{ServerSideEncryptionConfiguration: serverSideEncryptionConfiguration}, nil).Times(times)
+		}
+
+		mockPutBucketEncryption = func(sseAlgorithm string, kmsMasterKeyID *string) {
+			mockS3API.EXPECT().PutBucketEncryption(
+				&s3.PutBucketEncryptionInput{
+					Bucket: aws.String("test-bucket"),
+					ServerSideEncryptionConfiguration: &s3.ServerSideEncryptionConfiguration{
+						Rules: []*s3.ServerSideEncryptionRule{
+							{
+								ApplyServerSideEncryptionByDefault: &s3.ServerSideEncryptionByDefault{
+									SSEAlgorithm:   aws.String(sseAlgorithm),
+									KMSMasterKeyID: kmsMasterKeyID,
+								},
+							},
+						},
+					},
+				}).Return(&s3.PutBucketEncryptionOutput{}, nil)
+		}
 	)
 	BeforeEach(func() {
 		mockCtrl = gomock.NewController(GinkgoT())
@@ -208,6 +243,7 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 				mockHeadBucketNotFound()
 				mockCreateBucket()
 				mockGetBucketTagging(map[string]string{}, 2)
+				mockGetBucketEncryption("", "", 2)
 				mockGetBucketPolicy("", 2)
 				mockHeadBucket(1)
 
@@ -246,6 +282,7 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 				mockCreateBucket()
 				mockHeadBucket(3)
 				mockGetBucketTagging(map[string]string{}, 4)
+				mockGetBucketEncryption("", "", 4)
 				mockGetBucketPolicy("", 1)
 
 				policyAllow := `{"Version": "2012-10-17","Statement": [{"Effect": "Allow"}]}`
@@ -327,6 +364,7 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 				mockHeadBucketNotFound()
 				mockCreateBucket()
 				mockGetBucketTagging(map[string]string{}, 4)
+				mockGetBucketEncryption("", "", 4)
 				mockGetBucketPolicy("", 4)
 				mockHeadBucket(3)
 
@@ -383,6 +421,7 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 				mockHeadBucket(3)
 				mockGetBucketTagging(map[string]string{}, 1)
 				mockGetBucketPolicy("", 4)
+				mockGetBucketEncryption("", "", 4)
 
 				tagsCreate := map[string]string{"tag1": "value1"}
 				mockS3API.EXPECT().PutBucketTagging(
@@ -462,6 +501,90 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Eventually(requests, timeout).Should(Receive(Equal(expectedRequest)))
 				shouldSendEvent("S3Bucket", "default", objectName, "BucketTaggingDeleted")
+			})
+		})
+		Context("S3Bucket with SSE config", func() {
+			BeforeEach(func() {
+				objectName = "s3-foo-bucket-5"
+			})
+			It("Create, update and delete S3Bucket tagging", func() {
+				mockHeadBucketNotFound()
+				mockCreateBucket()
+				mockHeadBucket(3)
+				mockGetBucketTagging(map[string]string{}, 4)
+				mockGetBucketPolicy("", 4)
+				mockGetBucketEncryption("", "", 1)
+
+				mockGetBucketEncryption("AES256", "", 1)
+				mockPutBucketEncryption("AES256", nil)
+				instance = &awsv1beta1.S3Bucket{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      objectName,
+						Namespace: "default",
+					},
+					Spec: awsv1beta1.S3BucketSpec{
+						Bucket: "test-bucket",
+						ServerSideEncryptionConfiguration: &awsv1beta1.S3BucketServerSideEncryptionConfiguration{
+							Rule: awsv1beta1.S3ServerSideEncryptionRule{
+								ApplyServerSideEncryptionByDefault: awsv1beta1.S3ServerSideEncryptionByDefault{
+									SSEAlgorithm: "AES256",
+								},
+							},
+						},
+					},
+				}
+				err := c.Create(context.TODO(), instance)
+				Expect(err).NotTo(HaveOccurred())
+				// wait for create reconcile
+				Eventually(requests, timeout).Should(Receive(Equal(expectedRequest)))
+				// wait for reconcile of status
+				Eventually(requests, timeout).Should(Receive(Equal(expectedRequest)))
+
+				shouldWaitForStatusUpdate(expectedRequest.NamespacedName,
+					awsv1beta1.S3BucketStatus{
+						ARN:                "arn:aws:s3:::test-bucket",
+						LocationConstraint: "eu-central-1",
+						Acl:                "private"})
+
+				shouldSendEvent("S3Bucket", "default", objectName, "BucketCreated")
+				shouldSendEvent("S3Bucket", "default", objectName, "BucketEncryptionCreated")
+
+				// UPDATE SSE config
+				mockGetBucketEncryption("AES256", "", 1)
+				// get latest version of the object
+				Eventually(func() error { return c.Get(context.TODO(), expectedRequest.NamespacedName, instance) }, timeout).Should(Succeed())
+
+				mockPutBucketEncryption("aws:kms", aws.String("arn:aws:kms:eu-central-1:1234/5678example"))
+				instance.Spec.ServerSideEncryptionConfiguration = &awsv1beta1.S3BucketServerSideEncryptionConfiguration{
+					Rule: awsv1beta1.S3ServerSideEncryptionRule{
+						ApplyServerSideEncryptionByDefault: awsv1beta1.S3ServerSideEncryptionByDefault{
+							SSEAlgorithm:   "aws:kms",
+							KMSMasterKeyID: "arn:aws:kms:eu-central-1:1234/5678example",
+						},
+					},
+				}
+
+				err = c.Update(context.TODO(), instance)
+				Expect(err).NotTo(HaveOccurred())
+				// wait for update reconcile
+				Eventually(requests, timeout).Should(Receive(Equal(expectedRequest)))
+				shouldSendEvent("S3Bucket", "default", objectName, "BucketEncryptionUpdated")
+
+				// DELETE tagging
+				mockGetBucketEncryption("aws:kms", "arn:aws:kms:eu-central-1:1234/5678example", 1)
+
+				mockS3API.EXPECT().DeleteBucketEncryption(
+					&s3.DeleteBucketEncryptionInput{
+						Bucket: aws.String("test-bucket"),
+					}).Return(&s3.DeleteBucketEncryptionOutput{}, nil)
+
+				// get latest version of the object
+				Eventually(func() error { return c.Get(context.TODO(), expectedRequest.NamespacedName, instance) }, timeout).Should(Succeed())
+				instance.Spec.ServerSideEncryptionConfiguration = nil
+				err = c.Update(context.TODO(), instance)
+				Expect(err).NotTo(HaveOccurred())
+				Eventually(requests, timeout).Should(Receive(Equal(expectedRequest)))
+				shouldSendEvent("S3Bucket", "default", objectName, "BucketEncryptionDeleted")
 			})
 		})
 	})
