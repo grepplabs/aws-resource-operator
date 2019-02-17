@@ -22,3 +22,5 @@ In contrast to the [aws-service-operator](https://github.com/awslabs/aws-service
     * check [predefined set of grantees and permissions](https://docs.aws.amazon.com/AmazonS3/latest/dev/acl-overview.html#canned-acl)
 - [tags](https://docs.aws.amazon.com/cli/latest/reference/s3api/put-bucket-tagging.html)
 - [encryption](https://docs.aws.amazon.com/cli/latest/reference/s3api/put-bucket-encryption.html)
+- [versioning](https://docs.aws.amazon.com/cli/latest/reference/s3api/put-bucket-versioning.html)
+    * MFA and MFADelete are not supported

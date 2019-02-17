@@ -50,6 +50,9 @@ type S3BucketSpec struct {
 	// A server-side encryption configuration
 	// +optional
 	ServerSideEncryptionConfiguration *S3BucketServerSideEncryptionConfiguration `json:"serverSideEncryptionConfiguration,omitempty"`
+	// The bucket versioning state
+	// +optional
+	Versioning *S3BucketVersioning `json:"versioning,omitempty"`
 }
 
 type DeleteStrategyType string
@@ -106,6 +109,13 @@ type S3ServerSideEncryptionByDefault struct {
 	// KMS master key ID to use for the default encryption. This parameter is allowed if SSEAlgorithm is aws:kms.
 	// +optional
 	KMSMasterKeyID string `json:"kmsMasterKeyID,omitempty"`
+}
+
+// Container for a state of versioning
+type S3BucketVersioning struct {
+	// Enable versioning. Once you version-enable a bucket, it can never return to an unversioned state.
+	// You can, however, suspend versioning on that bucket
+	Enabled bool `json:"enabled"`
 }
 
 // +genclient

@@ -367,6 +367,9 @@ func (r ReconcileS3Bucket) reconcileBucket(instance *awsv1beta1.S3Bucket) *awscl
 	if err := r.reconcileBucketEncryption(instance); err != nil {
 		return err
 	}
+	if err := r.reconcileBucketVersioning(instance); err != nil {
+		return err
+	}
 	return nil
 }
 func (r ReconcileS3Bucket) reconcileBucketTags(instance *awsv1beta1.S3Bucket) *awsclient.RetryError {
@@ -543,6 +546,70 @@ func (r ReconcileS3Bucket) updateBucketPolicy(instance *awsv1beta1.S3Bucket, cur
 		r.sendEvent(instance, apiv1.EventTypeNormal, "BucketPolicyDeleted", "Bucket policy deleted")
 	}
 	return nil
+}
+
+func (r ReconcileS3Bucket) reconcileBucketVersioning(instance *awsv1beta1.S3Bucket) *awsclient.RetryError {
+
+	bucket := instance.Spec.Bucket
+	currentVersioning, retryError := r.readyBucketVersioning(bucket)
+	if retryError != nil {
+		return retryError
+	}
+	var currentEnabled bool
+	if currentVersioning != nil {
+		currentEnabled = currentVersioning.Enabled
+	}
+
+	var desiredEnabled bool
+	if instance.Spec.Versioning != nil {
+		desiredEnabled = instance.Spec.Versioning.Enabled
+	}
+	if currentEnabled == desiredEnabled {
+		return nil
+	}
+
+	log.Info(fmt.Sprintf("Change bucket versioning enabled from %v to %v", currentEnabled, desiredEnabled))
+
+	status := bucketVersioningStatus(desiredEnabled)
+	_, err := r.s3conn.PutBucketVersioning(&s3.PutBucketVersioningInput{
+		Bucket: aws.String(bucket),
+		VersioningConfiguration: &s3.VersioningConfiguration{
+			Status: aws.String(status),
+		},
+	})
+	if err != nil {
+		if awsclient.IsAWSCode(err, []string{s3.ErrCodeNoSuchBucket}) {
+			return awsclient.RetryableError(err, "UpdateBucketVersioningFailed")
+		}
+		return awsclient.NonRetryableError(fmt.Errorf("error update S3 Bucket versioning (%s): %s", bucket, err), "UpdateBucketVersioningFailed")
+	}
+	r.sendEvent(instance, apiv1.EventTypeNormal, fmt.Sprintf("BucketVersioning%s", status), "Bucket versioning updated")
+	return nil
+}
+func bucketVersioningStatus(enabled bool) string {
+	if enabled {
+		return s3.BucketVersioningStatusEnabled
+	}
+	return s3.BucketVersioningStatusSuspended
+}
+
+func (r ReconcileS3Bucket) readyBucketVersioning(bucket string) (*awsv1beta1.S3BucketVersioning, *awsclient.RetryError) {
+	versioning, err := r.s3conn.GetBucketVersioning(&s3.GetBucketVersioningInput{
+		Bucket: aws.String(bucket),
+	})
+	if err != nil {
+		if awsclient.IsAWSCode(err, []string{s3.ErrCodeNoSuchBucket}) {
+			return nil, awsclient.RetryableError(err, "GetBucketVersioningFailed")
+		}
+		return nil, awsclient.NonRetryableError(fmt.Errorf("error reading S3 Bucket versioning (%s): %s", bucket, err), "GetBucketVersioningFailed")
+	}
+	result := &awsv1beta1.S3BucketVersioning{
+		Enabled: false,
+	}
+	if versioning != nil && versioning.Status != nil && *versioning.Status == s3.BucketVersioningStatusEnabled {
+		result.Enabled = true
+	}
+	return result, nil
 }
 
 func (r ReconcileS3Bucket) reconcileBucketEncryption(instance *awsv1beta1.S3Bucket) *awsclient.RetryError {

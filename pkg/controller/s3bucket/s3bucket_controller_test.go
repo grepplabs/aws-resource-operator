@@ -185,6 +185,21 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 					},
 				}).Return(&s3.PutBucketEncryptionOutput{}, nil)
 		}
+
+		mockGetBucketVersioning = func(enabled bool, times int) {
+			mockS3API.EXPECT().GetBucketVersioning(&s3.GetBucketVersioningInput{
+				Bucket: aws.String("test-bucket"),
+			}).Return(&s3.GetBucketVersioningOutput{Status: aws.String(bucketVersioningStatus(enabled))}, nil).Times(times)
+		}
+
+		mockPutBucketVersioning = func(enabled bool) {
+			mockS3API.EXPECT().PutBucketVersioning(&s3.PutBucketVersioningInput{
+				Bucket: aws.String("test-bucket"),
+				VersioningConfiguration: &s3.VersioningConfiguration{
+					Status: aws.String(bucketVersioningStatus(enabled)),
+				},
+			}).Return(&s3.PutBucketVersioningOutput{}, nil)
+		}
 	)
 	BeforeEach(func() {
 		mockCtrl = gomock.NewController(GinkgoT())
@@ -244,6 +259,7 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 				mockCreateBucket()
 				mockGetBucketTagging(map[string]string{}, 2)
 				mockGetBucketEncryption("", "", 2)
+				mockGetBucketVersioning(false, 2)
 				mockGetBucketPolicy("", 2)
 				mockHeadBucket(1)
 
@@ -283,6 +299,7 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 				mockHeadBucket(3)
 				mockGetBucketTagging(map[string]string{}, 4)
 				mockGetBucketEncryption("", "", 4)
+				mockGetBucketVersioning(false, 4)
 				mockGetBucketPolicy("", 1)
 
 				policyAllow := `{"Version": "2012-10-17","Statement": [{"Effect": "Allow"}]}`
@@ -365,6 +382,7 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 				mockCreateBucket()
 				mockGetBucketTagging(map[string]string{}, 4)
 				mockGetBucketEncryption("", "", 4)
+				mockGetBucketVersioning(false, 4)
 				mockGetBucketPolicy("", 4)
 				mockHeadBucket(3)
 
@@ -422,8 +440,9 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 				mockGetBucketTagging(map[string]string{}, 1)
 				mockGetBucketPolicy("", 4)
 				mockGetBucketEncryption("", "", 4)
+				mockGetBucketVersioning(false, 4)
 
-				tagsCreate := map[string]string{"tag1": "value1"}
+				tagsCreate := map[string]string{"tag1": "value1	"}
 				mockS3API.EXPECT().PutBucketTagging(
 					&s3.PutBucketTaggingInput{
 						Bucket: aws.String("test-bucket"),
@@ -514,6 +533,7 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 				mockGetBucketTagging(map[string]string{}, 4)
 				mockGetBucketPolicy("", 4)
 				mockGetBucketEncryption("", "", 1)
+				mockGetBucketVersioning(false, 4)
 
 				mockGetBucketEncryption("AES256", "", 1)
 				mockPutBucketEncryption("AES256", nil)
@@ -587,6 +607,66 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 				shouldSendEvent("S3Bucket", "default", objectName, "BucketEncryptionDeleted")
 			})
 		})
+		Context("S3Bucket versioning", func() {
+			BeforeEach(func() {
+				objectName = "s3-foo-bucket-6"
+			})
+			It("Update S3Bucket versioning", func() {
+				mockHeadBucketNotFound()
+				mockCreateBucket()
+				mockHeadBucket(2)
+				mockGetBucketTagging(map[string]string{}, 3)
+				mockGetBucketPolicy("", 3)
+				mockGetBucketEncryption("", "", 3)
+				mockGetBucketVersioning(false, 1)
+
+				mockPutBucketVersioning(true)
+				mockGetBucketVersioning(true, 1)
+
+				instance = &awsv1beta1.S3Bucket{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      objectName,
+						Namespace: "default",
+					},
+					Spec: awsv1beta1.S3BucketSpec{
+						Bucket: "test-bucket",
+						Versioning: &awsv1beta1.S3BucketVersioning{
+							Enabled: true,
+						},
+					},
+				}
+				err := c.Create(context.TODO(), instance)
+				Expect(err).NotTo(HaveOccurred())
+				// wait for create reconcile
+				Eventually(requests, timeout).Should(Receive(Equal(expectedRequest)))
+				// wait for reconcile of status
+				Eventually(requests, timeout).Should(Receive(Equal(expectedRequest)))
+
+				shouldWaitForStatusUpdate(expectedRequest.NamespacedName,
+					awsv1beta1.S3BucketStatus{
+						ARN:                "arn:aws:s3:::test-bucket",
+						LocationConstraint: "eu-central-1",
+						Acl:                "private"})
+
+				shouldSendEvent("S3Bucket", "default", objectName, "BucketCreated")
+				shouldSendEvent("S3Bucket", "default", objectName, "BucketVersioningEnabled")
+
+				// UPDATE versioning
+				mockGetBucketVersioning(true, 1)
+				// get latest version of the object
+				Eventually(func() error { return c.Get(context.TODO(), expectedRequest.NamespacedName, instance) }, timeout).Should(Succeed())
+
+				mockPutBucketVersioning(false)
+				instance.Spec.Versioning.Enabled = false
+
+				err = c.Update(context.TODO(), instance)
+				Expect(err).NotTo(HaveOccurred())
+				// wait for update reconcile
+				Eventually(requests, timeout).Should(Receive(Equal(expectedRequest)))
+				shouldSendEvent("S3Bucket", "default", objectName, "BucketVersioningSuspended")
+			})
+		})
+
 	})
 
 	AfterEach(func() {
@@ -624,6 +704,20 @@ var _ = Describe("S3Bucket Help Functions Suite", func() {
 		Entry("multi-line error message",
 			"\n\tstatus code: 301, request id: , host id: ",
 			"Reconcile failed",
+		),
+	)
+
+	DescribeTable("S3 bucket versioning status",
+		func(enabled bool, status string) {
+			Expect(bucketVersioningStatus(enabled)).To(Equal(status))
+		},
+		Entry("enabled",
+			true,
+			s3.BucketVersioningStatusEnabled,
+		),
+		Entry("suspended",
+			false,
+			s3.BucketVersioningStatusSuspended,
 		),
 	)
 

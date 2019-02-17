@@ -98,6 +98,17 @@ spec:
             tags:
               description: A mapping of tags to assign to the bucket
               type: object
+            versioning:
+              description: The bucket versioning state
+              properties:
+                enabled:
+                  description: Enable versioning. Once you version-enable a bucket,
+                    it can never return to an unversioned state. You can, however,
+                    suspend versioning on that bucket
+                  type: boolean
+              required:
+              - enabled
+              type: object
           required:
           - bucket
           type: object
