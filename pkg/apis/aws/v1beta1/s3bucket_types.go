@@ -53,6 +53,9 @@ type S3BucketSpec struct {
 	// The bucket versioning state
 	// +optional
 	Versioning *S3BucketVersioning `json:"versioning,omitempty"`
+	// The server access logging provides detailed records for the requests that are made to a bucket
+	// +optional
+	Logging *S3BucketLogging `json:"logging,omitempty"`
 }
 
 type DeleteStrategyType string
@@ -116,6 +119,20 @@ type S3BucketVersioning struct {
 	// Enable versioning. Once you version-enable a bucket, it can never return to an unversioned state.
 	// You can, however, suspend versioning on that bucket
 	Enabled bool `json:"enabled"`
+}
+
+// Container for logging information. Presence of this element indicates that logging is enabled.
+type S3BucketLogging struct {
+	// Specifies the bucket where you want Amazon S3 to store server access logs.
+	// You can have your logs delivered to any bucket that you own, including the
+	// same bucket that is being logged. You can also configure multiple buckets
+	// to deliver their logs to the same target bucket. In this case you should
+	// choose a different TargetPrefix for each source bucket so that the delivered
+	// log files can be distinguished by key.
+	TargetBucket string `json:"targetBucket"`
+	// A prefix for Amazon S3 to assign to all log object keys.
+	// +optional
+	TargetPrefix string `json:"targetPrefix,omitempty"`
 }
 
 // +genclient

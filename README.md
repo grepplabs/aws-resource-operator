@@ -24,3 +24,5 @@ In contrast to the [aws-service-operator](https://github.com/awslabs/aws-service
 - [encryption](https://docs.aws.amazon.com/cli/latest/reference/s3api/put-bucket-encryption.html)
 - [versioning](https://docs.aws.amazon.com/cli/latest/reference/s3api/put-bucket-versioning.html)
     * MFA and MFADelete are not supported
+- [logging](https://docs.aws.amazon.com/cli/latest/reference/s3api/put-bucket-logging.html)
+    * TargetGrants are not supported

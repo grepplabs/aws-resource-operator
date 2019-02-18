@@ -202,6 +202,11 @@ func (r ReconcileS3Bucket) validateInstance(instance *awsv1beta1.S3Bucket) *awsc
 	if err := validateBucketName(bucket, region); err != nil {
 		return awsclient.NonRetryableError(fmt.Errorf("error validating S3 bucket name: %s", err), "BucketNameValidation")
 	}
+	if instance.Spec.Logging != nil {
+		if instance.Spec.Logging.TargetBucket == "" {
+			return awsclient.NonRetryableError(fmt.Errorf("error validating S3 bucket Logging: TargetBucket is required"), "BucketLoggingValidation")
+		}
+	}
 	if instance.Status.ARN != "" {
 		bucketARN := r.bucketARN(instance)
 		if instance.Status.ARN != bucketARN {
@@ -368,6 +373,9 @@ func (r ReconcileS3Bucket) reconcileBucket(instance *awsv1beta1.S3Bucket) *awscl
 		return err
 	}
 	if err := r.reconcileBucketVersioning(instance); err != nil {
+		return err
+	}
+	if err := r.reconcileBucketLogging(instance); err != nil {
 		return err
 	}
 	return nil
@@ -612,6 +620,85 @@ func (r ReconcileS3Bucket) readyBucketVersioning(bucket string) (*awsv1beta1.S3B
 	return result, nil
 }
 
+func (r ReconcileS3Bucket) reconcileBucketLogging(instance *awsv1beta1.S3Bucket) *awsclient.RetryError {
+	bucket := instance.Spec.Bucket
+	currentLogging, retryError := r.readyBucketLogging(bucket)
+	if retryError != nil {
+		return retryError
+	}
+	desiredLogging := instance.Spec.Logging
+	if currentLogging == nil && desiredLogging == nil {
+		return nil
+	} else if currentLogging == nil && desiredLogging != nil {
+		log.Info(fmt.Sprintf("Creating bucket logging (%s,%s)", desiredLogging.TargetBucket, desiredLogging.TargetPrefix), "bucket", bucket)
+		err := r.updateBucketLogging(bucket, *desiredLogging)
+		if err != nil {
+			if awsclient.IsAWSCode(err, []string{s3.ErrCodeNoSuchBucket}) {
+				return awsclient.RetryableError(err, "CreateBucketLoggingFailed")
+			}
+			return awsclient.NonRetryableError(fmt.Errorf("error create S3 Bucket logging (%s): %s", bucket, err), "CreateBucketLoggingFailed")
+		}
+		r.sendEvent(instance, apiv1.EventTypeNormal, "BucketLoggingCreated", "Bucket logging created")
+	} else if currentLogging != nil && desiredLogging == nil {
+		log.Info(fmt.Sprintf("Deleting bucket logging (%s,%s)", currentLogging.TargetBucket, currentLogging.TargetPrefix), "bucket", bucket)
+		_, err := r.s3conn.PutBucketLogging(&s3.PutBucketLoggingInput{
+			Bucket:              aws.String(bucket),
+			BucketLoggingStatus: &s3.BucketLoggingStatus{},
+		})
+		if err != nil {
+			if awsclient.IsAWSCode(err, []string{s3.ErrCodeNoSuchBucket}) {
+				return awsclient.RetryableError(err, "DeleteBucketLoggingFailed")
+			}
+			return awsclient.NonRetryableError(fmt.Errorf("error delete S3 Bucket logging (%s): %s", bucket, err), "DeleteBucketLoggingFailed")
+		}
+		r.sendEvent(instance, apiv1.EventTypeNormal, "BucketLoggingDeleted", "Bucket logging deleted")
+	} else if !reflect.DeepEqual(currentLogging, desiredLogging) {
+		log.Info(fmt.Sprintf("Updating bucket logging from (%s,%s) to (%s,%s)", currentLogging.TargetBucket, currentLogging.TargetPrefix, desiredLogging.TargetBucket, desiredLogging.TargetPrefix), "bucket", bucket)
+
+		err := r.updateBucketLogging(bucket, *desiredLogging)
+		if err != nil {
+			if awsclient.IsAWSCode(err, []string{s3.ErrCodeNoSuchBucket}) {
+				return awsclient.RetryableError(err, "UpdateBucketLoggingFailed")
+			}
+			return awsclient.NonRetryableError(fmt.Errorf("error update S3 Bucket logging (%s): %s", bucket, err), "UpdateBucketLoggingFailed")
+		}
+		r.sendEvent(instance, apiv1.EventTypeNormal, "BucketLoggingUpdated", "Bucket logging updated")
+	}
+	return nil
+}
+
+func (r ReconcileS3Bucket) updateBucketLogging(bucket string, desiredLogging awsv1beta1.S3BucketLogging) error {
+	_, err := r.s3conn.PutBucketLogging(&s3.PutBucketLoggingInput{
+		Bucket: aws.String(bucket),
+		BucketLoggingStatus: &s3.BucketLoggingStatus{
+			LoggingEnabled: &s3.LoggingEnabled{
+				TargetBucket: aws.String(desiredLogging.TargetBucket),
+				TargetPrefix: aws.String(desiredLogging.TargetPrefix),
+			},
+		},
+	})
+	return err
+}
+
+func (r ReconcileS3Bucket) readyBucketLogging(bucket string) (*awsv1beta1.S3BucketLogging, *awsclient.RetryError) {
+	logging, err := r.s3conn.GetBucketLogging(&s3.GetBucketLoggingInput{
+		Bucket: aws.String(bucket),
+	})
+	if err != nil {
+		if awsclient.IsAWSCode(err, []string{s3.ErrCodeNoSuchBucket}) {
+			return nil, awsclient.RetryableError(err, "GetBucketLoggingFailed")
+		}
+		return nil, awsclient.NonRetryableError(fmt.Errorf("error reading S3 Bucket logging (%s): %s", bucket, err), "GetBucketLoggingFailed")
+	}
+	if logging.LoggingEnabled != nil && logging.LoggingEnabled.TargetBucket != nil {
+		return &awsv1beta1.S3BucketLogging{
+			TargetBucket: aws.StringValue(logging.LoggingEnabled.TargetBucket),
+			TargetPrefix: aws.StringValue(logging.LoggingEnabled.TargetPrefix),
+		}, nil
+	}
+	return nil, nil
+}
+
 func (r ReconcileS3Bucket) reconcileBucketEncryption(instance *awsv1beta1.S3Bucket) *awsclient.RetryError {
 	bucket := instance.Spec.Bucket
 	currentEncryption, retryError := r.readyBucketEncryption(bucket)
@@ -633,7 +720,7 @@ func (r ReconcileS3Bucket) reconcileBucketEncryption(instance *awsv1beta1.S3Buck
 			}
 			return awsclient.NonRetryableError(fmt.Errorf("error create S3 Bucket encryption (%s): %s", bucket, err), "CreateBucketEncryptionFailed")
 		}
-		r.sendEvent(instance, apiv1.EventTypeNormal, "BucketEncryptionCreated", "Bucket encryption deleted")
+		r.sendEvent(instance, apiv1.EventTypeNormal, "BucketEncryptionCreated", "Bucket encryption created")
 	} else if currentEncryption != nil && desiredEncryption == nil {
 		log.Info(fmt.Sprintf("Deleting bucket encryption (%s,%s)", currentEncryption.SSEAlgorithm, currentEncryption.KMSMasterKeyID), "bucket", bucket)
 		_, err := r.s3conn.DeleteBucketEncryption(&s3.DeleteBucketEncryptionInput{
@@ -656,8 +743,6 @@ func (r ReconcileS3Bucket) reconcileBucketEncryption(instance *awsv1beta1.S3Buck
 			return awsclient.NonRetryableError(fmt.Errorf("error update S3 Bucket encryption (%s): %s", bucket, err), "UpdateBucketEncryptionFailed")
 		}
 		r.sendEvent(instance, apiv1.EventTypeNormal, "BucketEncryptionUpdated", "Bucket encryption updated")
-	} else {
-		return nil
 	}
 	return nil
 }

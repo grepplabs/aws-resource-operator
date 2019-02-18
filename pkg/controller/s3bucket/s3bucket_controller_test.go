@@ -200,6 +200,37 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 				},
 			}).Return(&s3.PutBucketVersioningOutput{}, nil)
 		}
+
+		mockGetBucketLogging = func(targetBucket, targetPrefix string, times int) {
+			var loggingEnabled *s3.LoggingEnabled
+			if targetBucket != "" {
+				loggingEnabled = &s3.LoggingEnabled{
+					TargetBucket: aws.String(targetBucket),
+					TargetPrefix: aws.String(targetPrefix),
+				}
+			}
+			mockS3API.EXPECT().GetBucketLogging(&s3.GetBucketLoggingInput{
+				Bucket: aws.String("test-bucket"),
+			}).Return(&s3.GetBucketLoggingOutput{LoggingEnabled: loggingEnabled}, nil).Times(times)
+		}
+
+		mockPutBucketLogging = func(targetBucket, targetPrefix string) {
+			var loggingEnabled *s3.LoggingEnabled
+			if targetBucket != "" {
+				loggingEnabled = &s3.LoggingEnabled{
+					TargetBucket: aws.String(targetBucket),
+					TargetPrefix: aws.String(targetPrefix),
+				}
+			}
+
+			mockS3API.EXPECT().PutBucketLogging(
+				&s3.PutBucketLoggingInput{
+					Bucket: aws.String("test-bucket"),
+					BucketLoggingStatus: &s3.BucketLoggingStatus{
+						LoggingEnabled: loggingEnabled,
+					},
+				}).Return(&s3.PutBucketLoggingOutput{}, nil)
+		}
 	)
 	BeforeEach(func() {
 		mockCtrl = gomock.NewController(GinkgoT())
@@ -260,6 +291,7 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 				mockGetBucketTagging(map[string]string{}, 2)
 				mockGetBucketEncryption("", "", 2)
 				mockGetBucketVersioning(false, 2)
+				mockGetBucketLogging("", "", 2)
 				mockGetBucketPolicy("", 2)
 				mockHeadBucket(1)
 
@@ -300,6 +332,7 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 				mockGetBucketTagging(map[string]string{}, 4)
 				mockGetBucketEncryption("", "", 4)
 				mockGetBucketVersioning(false, 4)
+				mockGetBucketLogging("", "", 4)
 				mockGetBucketPolicy("", 1)
 
 				policyAllow := `{"Version": "2012-10-17","Statement": [{"Effect": "Allow"}]}`
@@ -383,6 +416,7 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 				mockGetBucketTagging(map[string]string{}, 4)
 				mockGetBucketEncryption("", "", 4)
 				mockGetBucketVersioning(false, 4)
+				mockGetBucketLogging("", "", 4)
 				mockGetBucketPolicy("", 4)
 				mockHeadBucket(3)
 
@@ -441,6 +475,7 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 				mockGetBucketPolicy("", 4)
 				mockGetBucketEncryption("", "", 4)
 				mockGetBucketVersioning(false, 4)
+				mockGetBucketLogging("", "", 4)
 
 				tagsCreate := map[string]string{"tag1": "value1	"}
 				mockS3API.EXPECT().PutBucketTagging(
@@ -534,6 +569,7 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 				mockGetBucketPolicy("", 4)
 				mockGetBucketEncryption("", "", 1)
 				mockGetBucketVersioning(false, 4)
+				mockGetBucketLogging("", "", 4)
 
 				mockGetBucketEncryption("AES256", "", 1)
 				mockPutBucketEncryption("AES256", nil)
@@ -619,6 +655,7 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 				mockGetBucketPolicy("", 3)
 				mockGetBucketEncryption("", "", 3)
 				mockGetBucketVersioning(false, 1)
+				mockGetBucketLogging("", "", 3)
 
 				mockPutBucketVersioning(true)
 				mockGetBucketVersioning(true, 1)
@@ -664,6 +701,80 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 				// wait for update reconcile
 				Eventually(requests, timeout).Should(Receive(Equal(expectedRequest)))
 				shouldSendEvent("S3Bucket", "default", objectName, "BucketVersioningSuspended")
+			})
+		})
+		Context("S3Bucket with logging config", func() {
+			BeforeEach(func() {
+				objectName = "s3-foo-bucket-7"
+			})
+			It("Create, update and delete S3Bucket with logging", func() {
+				mockHeadBucketNotFound()
+				mockCreateBucket()
+				mockHeadBucket(3)
+				mockGetBucketTagging(map[string]string{}, 4)
+				mockGetBucketPolicy("", 4)
+				mockGetBucketEncryption("", "", 4)
+				mockGetBucketVersioning(false, 4)
+				mockGetBucketLogging("", "", 1)
+
+				mockPutBucketLogging("logging-bucket1", "")
+				mockGetBucketLogging("logging-bucket1", "", 1)
+				instance = &awsv1beta1.S3Bucket{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      objectName,
+						Namespace: "default",
+					},
+					Spec: awsv1beta1.S3BucketSpec{
+						Bucket: "test-bucket",
+						Logging: &awsv1beta1.S3BucketLogging{
+							TargetBucket: "logging-bucket1",
+						},
+					},
+				}
+				err := c.Create(context.TODO(), instance)
+				Expect(err).NotTo(HaveOccurred())
+				// wait for create reconcile
+				Eventually(requests, timeout).Should(Receive(Equal(expectedRequest)))
+				// wait for reconcile of status
+				Eventually(requests, timeout).Should(Receive(Equal(expectedRequest)))
+
+				shouldWaitForStatusUpdate(expectedRequest.NamespacedName,
+					awsv1beta1.S3BucketStatus{
+						ARN:                "arn:aws:s3:::test-bucket",
+						LocationConstraint: "eu-central-1",
+						Acl:                "private"})
+
+				shouldSendEvent("S3Bucket", "default", objectName, "BucketCreated")
+				shouldSendEvent("S3Bucket", "default", objectName, "BucketLoggingCreated")
+
+				// UPDATE logging config
+				mockGetBucketLogging("logging-bucket1", "", 1)
+				// get latest version of the object
+				Eventually(func() error { return c.Get(context.TODO(), expectedRequest.NamespacedName, instance) }, timeout).Should(Succeed())
+
+				mockPutBucketLogging("logging-bucket2", "prefix2")
+				instance.Spec.Logging = &awsv1beta1.S3BucketLogging{
+					TargetBucket: "logging-bucket2",
+					TargetPrefix: "prefix2",
+				}
+
+				err = c.Update(context.TODO(), instance)
+				Expect(err).NotTo(HaveOccurred())
+				// wait for update reconcile
+				Eventually(requests, timeout).Should(Receive(Equal(expectedRequest)))
+				shouldSendEvent("S3Bucket", "default", objectName, "BucketLoggingUpdated")
+
+				// DELETE tagging
+				mockGetBucketLogging("logging-bucket2", "prefix2", 1)
+				mockPutBucketLogging("", "")
+
+				// get latest version of the object
+				Eventually(func() error { return c.Get(context.TODO(), expectedRequest.NamespacedName, instance) }, timeout).Should(Succeed())
+				instance.Spec.Logging = nil
+				err = c.Update(context.TODO(), instance)
+				Expect(err).NotTo(HaveOccurred())
+				Eventually(requests, timeout).Should(Receive(Equal(expectedRequest)))
+				shouldSendEvent("S3Bucket", "default", objectName, "BucketLoggingDeleted")
 			})
 		})
 

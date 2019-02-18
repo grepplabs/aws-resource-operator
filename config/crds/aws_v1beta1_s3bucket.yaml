@@ -50,6 +50,26 @@ spec:
               - Skip
               - Force
               type: string
+            logging:
+              description: The server access logging provides detailed records for
+                the requests that are made to a bucket
+              properties:
+                targetBucket:
+                  description: Specifies the bucket where you want Amazon S3 to store
+                    server access logs. You can have your logs delivered to any bucket
+                    that you own, including the same bucket that is being logged.
+                    You can also configure multiple buckets to deliver their logs
+                    to the same target bucket. In this case you should choose a different
+                    TargetPrefix for each source bucket so that the delivered log
+                    files can be distinguished by key.
+                  type: string
+                targetPrefix:
+                  description: A prefix for Amazon S3 to assign to all log object
+                    keys.
+                  type: string
+              required:
+              - targetBucket
+              type: object
             ownershipStrategy:
               description: The bucket ownership strategy. Defaults to "Created"
               enum:
