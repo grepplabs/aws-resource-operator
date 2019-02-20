@@ -56,6 +56,9 @@ type S3BucketSpec struct {
 	// The server access logging provides detailed records for the requests that are made to a bucket
 	// +optional
 	Logging *S3BucketLogging `json:"logging,omitempty"`
+	// The static website hosting
+	// +optional
+	Website *S3BucketWebsite `json:"website,omitempty"`
 }
 
 type DeleteStrategyType string
@@ -133,6 +136,43 @@ type S3BucketLogging struct {
 	// A prefix for Amazon S3 to assign to all log object keys.
 	// +optional
 	TargetPrefix string `json:"targetPrefix,omitempty"`
+}
+
+// Container for static website hosting.
+type S3BucketWebsite struct {
+	// This endpoint is used as a website address. Use this bucket to host a website
+	// +optional
+	Endpoint *S3BucketWebsiteEndpoint `json:"endpoint,omitempty"`
+
+	// Redirect requests to bucket or target domain
+	// +optional
+	Redirect *S3BucketWebsiteRedirect `json:"redirect,omitempty"`
+}
+
+type S3BucketWebsiteEndpoint struct {
+	// This endpoint is used as a website address.
+	// Amazon S3 returns this index document when requests are made to the root domain or any of the subfolders.
+	IndexDocument string `json:"indexDocument"`
+
+	// This is returned when an error occures.
+	// An absolute path to the document to return in case of a 4XX error.
+	// +optional
+	ErrorDocument string `json:"errorDocument,omitempty"`
+
+	// A json array containing routing rules describing redirect behavior and when redirects are applied.
+	// +optional
+	RoutingRules string `json:"routingRules,omitempty"`
+}
+
+// Set up custom rules to automatically redirect webpage requests for specific content.
+type S3BucketWebsiteRedirect struct {
+	// Name of the host where requests will be redirected, target bucket or domain
+	HostName string `json:"hostName"`
+
+	// Protocol to use (http, https) when redirecting requests. The default is the protocol that is used in the original request.
+	// +optional
+	// +kubebuilder:validation:Enum=http,https
+	Protocol *string `json:"protocol,omitempty"`
 }
 
 // +genclient
