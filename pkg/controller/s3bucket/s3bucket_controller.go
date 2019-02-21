@@ -17,6 +17,7 @@ package s3bucket
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"github.com/aws/aws-sdk-go/service/s3/s3iface"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
@@ -207,6 +208,14 @@ func (r ReconcileS3Bucket) validateInstance(instance *awsv1beta1.S3Bucket) *awsc
 			return awsclient.NonRetryableError(fmt.Errorf("error validating S3 bucket Logging: TargetBucket is required"), "BucketLoggingValidation")
 		}
 	}
+	if instance.Spec.Website != nil {
+		if instance.Spec.Website.Redirect != nil && instance.Spec.Website.Endpoint != nil {
+			return awsclient.NonRetryableError(fmt.Errorf("error validating S3 bucket Website: Only Redirect OR Endpoint can be set"), "BucketWebsiteValidation")
+		}
+		if instance.Spec.Website.Redirect == nil && instance.Spec.Website.Endpoint == nil {
+			return awsclient.NonRetryableError(fmt.Errorf("error validating S3 bucket Website: Redirect OR Endpoint must be set"), "BucketWebsiteValidation")
+		}
+	}
 	if instance.Status.ARN != "" {
 		bucketARN := r.bucketARN(instance)
 		if instance.Status.ARN != bucketARN {
@@ -378,11 +387,14 @@ func (r ReconcileS3Bucket) reconcileBucket(instance *awsv1beta1.S3Bucket) *awscl
 	if err := r.reconcileBucketLogging(instance); err != nil {
 		return err
 	}
+	if err := r.reconcileBucketWebsite(instance); err != nil {
+		return err
+	}
 	return nil
 }
 func (r ReconcileS3Bucket) reconcileBucketTags(instance *awsv1beta1.S3Bucket) *awsclient.RetryError {
 	bucket := instance.Spec.Bucket
-	currentTags, retryError := r.readyBucketTags(bucket)
+	currentTags, retryError := r.readBucketTags(bucket)
 	if retryError != nil {
 		return retryError
 	}
@@ -428,7 +440,7 @@ func (r ReconcileS3Bucket) reconcileBucketTags(instance *awsv1beta1.S3Bucket) *a
 	return nil
 }
 
-func (r ReconcileS3Bucket) readyBucketTags(bucket string) (map[string]string, *awsclient.RetryError) {
+func (r ReconcileS3Bucket) readBucketTags(bucket string) (map[string]string, *awsclient.RetryError) {
 	getBucketTaggingOutput, err := r.s3conn.GetBucketTagging(&s3.GetBucketTaggingInput{
 		Bucket: aws.String(bucket),
 	})
@@ -472,7 +484,7 @@ func (r ReconcileS3Bucket) reconcileBucketPolicy(instance *awsv1beta1.S3Bucket) 
 	bucket := instance.Spec.Bucket
 
 	// current policy is already normalized
-	currentPolicy, retryError := r.readyBucketPolicy(bucket)
+	currentPolicy, retryError := r.readBucketPolicy(bucket)
 	if retryError != nil {
 		return retryError
 	}
@@ -491,7 +503,7 @@ func (r ReconcileS3Bucket) reconcileBucketPolicy(instance *awsv1beta1.S3Bucket) 
 	return r.updateBucketPolicy(instance, currentPolicy)
 }
 
-func (r ReconcileS3Bucket) readyBucketPolicy(bucket string) (string, *awsclient.RetryError) {
+func (r ReconcileS3Bucket) readBucketPolicy(bucket string) (string, *awsclient.RetryError) {
 	// read policy
 	getBucketPolicyOutput, err := r.s3conn.GetBucketPolicy(&s3.GetBucketPolicyInput{
 		Bucket: aws.String(bucket),
@@ -559,7 +571,7 @@ func (r ReconcileS3Bucket) updateBucketPolicy(instance *awsv1beta1.S3Bucket, cur
 func (r ReconcileS3Bucket) reconcileBucketVersioning(instance *awsv1beta1.S3Bucket) *awsclient.RetryError {
 
 	bucket := instance.Spec.Bucket
-	currentVersioning, retryError := r.readyBucketVersioning(bucket)
+	currentVersioning, retryError := r.readBucketVersioning(bucket)
 	if retryError != nil {
 		return retryError
 	}
@@ -601,7 +613,7 @@ func bucketVersioningStatus(enabled bool) string {
 	return s3.BucketVersioningStatusSuspended
 }
 
-func (r ReconcileS3Bucket) readyBucketVersioning(bucket string) (*awsv1beta1.S3BucketVersioning, *awsclient.RetryError) {
+func (r ReconcileS3Bucket) readBucketVersioning(bucket string) (*awsv1beta1.S3BucketVersioning, *awsclient.RetryError) {
 	versioning, err := r.s3conn.GetBucketVersioning(&s3.GetBucketVersioningInput{
 		Bucket: aws.String(bucket),
 	})
@@ -620,9 +632,210 @@ func (r ReconcileS3Bucket) readyBucketVersioning(bucket string) (*awsv1beta1.S3B
 	return result, nil
 }
 
+func (r ReconcileS3Bucket) reconcileBucketWebsite(instance *awsv1beta1.S3Bucket) *awsclient.RetryError {
+	bucket := instance.Spec.Bucket
+	currentWebsite, retryError := r.readBucketWebsite(bucket)
+
+	if retryError != nil {
+		return retryError
+	}
+	desiredWebsite := instance.Spec.Website
+	if currentWebsite == nil && desiredWebsite == nil {
+		return nil
+	} else if currentWebsite == nil && desiredWebsite != nil {
+		logInfof("Creating bucket website (%s): (%v | %v)", bucket, desiredWebsite.Endpoint, desiredWebsite.Redirect)
+
+		err := r.updateBucketWebsite(bucket, desiredWebsite)
+		if err != nil {
+			if awsclient.IsAWSCode(err, []string{s3.ErrCodeNoSuchBucket}) {
+				return awsclient.RetryableError(err, "PutBucketWebsiteFailed")
+			}
+			return awsclient.NonRetryableError(fmt.Errorf("error create S3 Bucket website (%s): %s", bucket, err), "PutBucketWebsiteFailed")
+		}
+		r.sendEvent(instance, apiv1.EventTypeNormal, "BucketWebsiteCreated", "Bucket website created")
+	} else if currentWebsite != nil && desiredWebsite == nil {
+		log.Info("Deleting bucket website", "bucket", bucket)
+
+		_, err := r.s3conn.DeleteBucketWebsite(&s3.DeleteBucketWebsiteInput{
+			Bucket: aws.String(bucket),
+		})
+		if err != nil {
+			if awsclient.IsAWSCode(err, []string{s3.ErrCodeNoSuchBucket}) {
+				return awsclient.RetryableError(err, "DeleteBucketWebsite")
+			}
+			return awsclient.NonRetryableError(fmt.Errorf("error delete S3 Bucket website (%s): %s", bucket, err), "PutBuckeDeleteBucketWebsitetWebsiteFailed")
+		}
+		r.sendEvent(instance, apiv1.EventTypeNormal, "BucketWebsiteDeleted", "Bucket website deleted")
+
+	} else {
+		if currentWebsite.Endpoint != nil && currentWebsite.Endpoint.RoutingRules != "" {
+			normalizedJson, err := structure.NormalizeJsonString(currentWebsite.Endpoint.RoutingRules)
+			if err != nil {
+				return awsclient.NonRetryableError(fmt.Errorf("error normalizing current website S3 Bucket (%s): %s", bucket, err), "NormalizeJsonBucketWebsiteFailed")
+			}
+			currentWebsite.Endpoint.RoutingRules = normalizedJson
+		}
+		if desiredWebsite.Endpoint != nil && desiredWebsite.Endpoint.RoutingRules != "" {
+			normalizedJson, err := structure.NormalizeJsonString(desiredWebsite.Endpoint.RoutingRules)
+			if err != nil {
+				return awsclient.NonRetryableError(fmt.Errorf("error normalizing desired website S3 Bucket (%s): %s", bucket, err), "NormalizeJsonBucketWebsiteFailed")
+			}
+			desiredWebsite.Endpoint.RoutingRules = normalizedJson
+		}
+		if !reflect.DeepEqual(currentWebsite, desiredWebsite) {
+			logInfof("Updating bucket website (%s): from (%v | %v) to (%v | %v)", bucket, currentWebsite.Endpoint, currentWebsite.Redirect, desiredWebsite.Endpoint, desiredWebsite.Redirect)
+			err := r.updateBucketWebsite(bucket, desiredWebsite)
+			if err != nil {
+				if awsclient.IsAWSCode(err, []string{s3.ErrCodeNoSuchBucket}) {
+					return awsclient.RetryableError(err, "PutBucketWebsiteFailed")
+				}
+				return awsclient.NonRetryableError(fmt.Errorf("error update S3 Bucket website (%s): %s", bucket, err), "PutBucketWebsiteFailed")
+			}
+			r.sendEvent(instance, apiv1.EventTypeNormal, "BucketWebsiteUpdated", "Bucket website updated")
+		}
+	}
+	return nil
+}
+
+func (r ReconcileS3Bucket) updateBucketWebsite(bucket string, desiredWebsite *awsv1beta1.S3BucketWebsite) error {
+	var indexDocument *s3.IndexDocument
+	var errorDocument *s3.ErrorDocument
+	var routingRules []*s3.RoutingRule
+
+	if desiredWebsite.Endpoint != nil {
+		if desiredWebsite.Endpoint.IndexDocument != "" {
+			indexDocument = &s3.IndexDocument{
+				Suffix: aws.String(desiredWebsite.Endpoint.IndexDocument),
+			}
+		}
+		if desiredWebsite.Endpoint.ErrorDocument != "" {
+			errorDocument = &s3.ErrorDocument{
+				Key: aws.String(desiredWebsite.Endpoint.ErrorDocument),
+			}
+		}
+		if desiredWebsite.Endpoint.RoutingRules != "" {
+			if err := json.Unmarshal([]byte(desiredWebsite.Endpoint.RoutingRules), &routingRules); err != nil {
+				return fmt.Errorf("error while unmarshaling S3 Bucket routing rules (%s): %s", bucket, err)
+			}
+		}
+	}
+	var redirectAllRequestsTo *s3.RedirectAllRequestsTo
+	if desiredWebsite.Redirect != nil && desiredWebsite.Redirect.HostName != "" {
+		var protocol *string
+		if desiredWebsite.Redirect.Protocol != "" {
+			protocol = aws.String(desiredWebsite.Redirect.Protocol)
+		}
+		redirectAllRequestsTo = &s3.RedirectAllRequestsTo{
+			HostName: aws.String(desiredWebsite.Redirect.HostName),
+			Protocol: protocol,
+		}
+	}
+
+	_, err := r.s3conn.PutBucketWebsite(&s3.PutBucketWebsiteInput{
+		Bucket: aws.String(bucket),
+		WebsiteConfiguration: &s3.WebsiteConfiguration{
+			IndexDocument:         indexDocument,
+			ErrorDocument:         errorDocument,
+			RoutingRules:          routingRules,
+			RedirectAllRequestsTo: redirectAllRequestsTo,
+		},
+	})
+	return err
+}
+
+func (r ReconcileS3Bucket) readBucketWebsite(bucket string) (*awsv1beta1.S3BucketWebsite, *awsclient.RetryError) {
+	website, err := r.s3conn.GetBucketWebsite(&s3.GetBucketWebsiteInput{
+		Bucket: aws.String(bucket),
+	})
+
+	if err != nil {
+		if awsclient.IsAWSCode(err, []string{s3.ErrCodeNoSuchBucket}) {
+			return nil, awsclient.RetryableError(err, "GetBucketWebsiteFailed")
+		}
+		if !awsclient.IsAWSCode(err, []string{"NoSuchWebsiteConfiguration", "NotImplemented"}) {
+			return nil, awsclient.NonRetryableError(fmt.Errorf("error reading S3 Bucket website (%s): %s", bucket, err), "GetBucketWebsiteFailed")
+		}
+	}
+	if website == nil {
+		return nil, nil
+	}
+	if website.IndexDocument != nil && website.IndexDocument.Suffix != nil {
+		var errorDocument string
+		if website.ErrorDocument != nil {
+			errorDocument = aws.StringValue(website.ErrorDocument.Key)
+		}
+		var routingRules string
+		if website.RoutingRules != nil {
+			routingRules, err = normalizeRoutingRules(website.RoutingRules)
+			if err != nil {
+				return nil, awsclient.NonRetryableError(fmt.Errorf("error while marshaling S3 Bucket routing rules (%s): %s", bucket, err), "NormalizeRoutingRulesFailed")
+			}
+		}
+
+		return &awsv1beta1.S3BucketWebsite{
+			Endpoint: &awsv1beta1.S3BucketWebsiteEndpoint{
+				IndexDocument: aws.StringValue(website.IndexDocument.Suffix),
+				ErrorDocument: errorDocument,
+				RoutingRules:  routingRules,
+			},
+		}, nil
+	} else if website.RedirectAllRequestsTo != nil && website.RedirectAllRequestsTo.HostName != nil {
+		return &awsv1beta1.S3BucketWebsite{
+			Redirect: &awsv1beta1.S3BucketWebsiteRedirect{
+				HostName: aws.StringValue(website.RedirectAllRequestsTo.HostName),
+				Protocol: aws.StringValue(website.RedirectAllRequestsTo.Protocol),
+			},
+		}, nil
+	}
+	return nil, nil
+}
+
+func normalizeRoutingRules(w []*s3.RoutingRule) (string, error) {
+	withNulls, err := json.Marshal(w)
+	if err != nil {
+		return "", err
+	}
+
+	var rules []map[string]interface{}
+	if err := json.Unmarshal(withNulls, &rules); err != nil {
+		return "", err
+	}
+
+	var cleanRules []map[string]interface{}
+	for _, rule := range rules {
+		cleanRules = append(cleanRules, removeNil(rule))
+	}
+
+	withoutNulls, err := json.Marshal(cleanRules)
+	if err != nil {
+		return "", err
+	}
+
+	return string(withoutNulls), nil
+}
+
+func removeNil(data map[string]interface{}) map[string]interface{} {
+	withoutNil := make(map[string]interface{})
+
+	for k, v := range data {
+		if v == nil {
+			continue
+		}
+
+		switch v.(type) {
+		case map[string]interface{}:
+			withoutNil[k] = removeNil(v.(map[string]interface{}))
+		default:
+			withoutNil[k] = v
+		}
+	}
+
+	return withoutNil
+}
+
 func (r ReconcileS3Bucket) reconcileBucketLogging(instance *awsv1beta1.S3Bucket) *awsclient.RetryError {
 	bucket := instance.Spec.Bucket
-	currentLogging, retryError := r.readyBucketLogging(bucket)
+	currentLogging, retryError := r.readBucketLogging(bucket)
 	if retryError != nil {
 		return retryError
 	}
@@ -680,7 +893,7 @@ func (r ReconcileS3Bucket) updateBucketLogging(bucket string, desiredLogging aws
 	return err
 }
 
-func (r ReconcileS3Bucket) readyBucketLogging(bucket string) (*awsv1beta1.S3BucketLogging, *awsclient.RetryError) {
+func (r ReconcileS3Bucket) readBucketLogging(bucket string) (*awsv1beta1.S3BucketLogging, *awsclient.RetryError) {
 	logging, err := r.s3conn.GetBucketLogging(&s3.GetBucketLoggingInput{
 		Bucket: aws.String(bucket),
 	})
@@ -701,7 +914,7 @@ func (r ReconcileS3Bucket) readyBucketLogging(bucket string) (*awsv1beta1.S3Buck
 
 func (r ReconcileS3Bucket) reconcileBucketEncryption(instance *awsv1beta1.S3Bucket) *awsclient.RetryError {
 	bucket := instance.Spec.Bucket
-	currentEncryption, retryError := r.readyBucketEncryption(bucket)
+	currentEncryption, retryError := r.readBucketEncryption(bucket)
 	if retryError != nil {
 		return retryError
 	}
@@ -769,7 +982,7 @@ func (r ReconcileS3Bucket) updateBucketEncryption(bucket string, desiredEncrypti
 	return err
 }
 
-func (r ReconcileS3Bucket) readyBucketEncryption(bucket string) (*awsv1beta1.S3ServerSideEncryptionByDefault, *awsclient.RetryError) {
+func (r ReconcileS3Bucket) readBucketEncryption(bucket string) (*awsv1beta1.S3ServerSideEncryptionByDefault, *awsclient.RetryError) {
 	// read bucket encryption
 	encryption, err := r.s3conn.GetBucketEncryption(&s3.GetBucketEncryptionInput{
 		Bucket: aws.String(bucket),

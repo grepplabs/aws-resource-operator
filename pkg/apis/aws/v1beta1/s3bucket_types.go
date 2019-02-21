@@ -172,7 +172,7 @@ type S3BucketWebsiteRedirect struct {
 	// Protocol to use (http, https) when redirecting requests. The default is the protocol that is used in the original request.
 	// +optional
 	// +kubebuilder:validation:Enum=http,https
-	Protocol *string `json:"protocol,omitempty"`
+	Protocol string `json:"protocol,omitempty"`
 }
 
 // +genclient
