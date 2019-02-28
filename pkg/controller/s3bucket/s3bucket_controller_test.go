@@ -16,6 +16,8 @@ limitations under the License.
 package s3bucket
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/aws/aws-sdk-go/aws"
@@ -24,6 +26,7 @@ import (
 	"github.com/golang/mock/gomock"
 	"golang.org/x/net/context"
 	"k8s.io/api/core/v1"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -231,6 +234,81 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 					},
 				}).Return(&s3.PutBucketLoggingOutput{}, nil)
 		}
+
+		toIndexDocument = func(indexDoc string) *s3.IndexDocument {
+			var indexDocument *s3.IndexDocument
+			if indexDoc != "" {
+				indexDocument = &s3.IndexDocument{
+					Suffix: aws.String(indexDoc),
+				}
+			}
+			return indexDocument
+		}
+
+		toErrorDocument = func(errorDoc string) *s3.ErrorDocument {
+			var errorDocument *s3.ErrorDocument
+			if errorDoc != "" {
+				errorDocument = &s3.ErrorDocument{
+					Key: aws.String(errorDoc),
+				}
+			}
+			return errorDocument
+		}
+
+		toRoutingRules = func(rules string) []*s3.RoutingRule {
+			var routingRules []*s3.RoutingRule
+			if rules != "" {
+				if err := json.Unmarshal([]byte(rules), &routingRules); err != nil {
+					panic(err)
+				}
+			}
+			return routingRules
+		}
+		toRedirectAllRequestsTo = func(redirectUrl string) *s3.RedirectAllRequestsTo {
+			var redirectAllRequestsTo *s3.RedirectAllRequestsTo
+			if redirectUrl != "" {
+				rr, err := url.Parse(redirectUrl)
+				if err == nil && rr.Scheme != "" {
+					var redirectHostBuf bytes.Buffer
+					redirectHostBuf.WriteString(rr.Host)
+					if rr.Path != "" {
+						redirectHostBuf.WriteString(rr.Path)
+					}
+					if rr.RawQuery != "" {
+						redirectHostBuf.WriteString("?")
+						redirectHostBuf.WriteString(rr.RawQuery)
+					}
+					redirectAllRequestsTo = &s3.RedirectAllRequestsTo{HostName: aws.String(redirectHostBuf.String()), Protocol: aws.String(rr.Scheme)}
+				} else {
+					redirectAllRequestsTo = &s3.RedirectAllRequestsTo{HostName: aws.String(redirectUrl)}
+				}
+			}
+			return redirectAllRequestsTo
+		}
+
+		mockGetBucketWebsite = func(indexDoc string, errorDoc string, rules string, redirectUrl string, times int) {
+			result := &s3.GetBucketWebsiteOutput{
+				IndexDocument:         toIndexDocument(indexDoc),
+				ErrorDocument:         toErrorDocument(errorDoc),
+				RoutingRules:          toRoutingRules(rules),
+				RedirectAllRequestsTo: toRedirectAllRequestsTo(redirectUrl),
+			}
+			mockS3API.EXPECT().GetBucketWebsite(&s3.GetBucketWebsiteInput{
+				Bucket: aws.String("test-bucket"),
+			}).Return(result, nil).Times(times)
+		}
+
+		mockPutBucketWebsite = func(indexDoc string, errorDoc string, rules string, redirectUrl string) {
+			mockS3API.EXPECT().PutBucketWebsite(&s3.PutBucketWebsiteInput{
+				Bucket: aws.String("test-bucket"),
+				WebsiteConfiguration: &s3.WebsiteConfiguration{
+					IndexDocument:         toIndexDocument(indexDoc),
+					ErrorDocument:         toErrorDocument(errorDoc),
+					RoutingRules:          toRoutingRules(rules),
+					RedirectAllRequestsTo: toRedirectAllRequestsTo(redirectUrl),
+				},
+			}).Return(&s3.PutBucketWebsiteOutput{}, nil)
+		}
 	)
 	BeforeEach(func() {
 		mockCtrl = gomock.NewController(GinkgoT())
@@ -293,6 +371,7 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 				mockGetBucketVersioning(false, 2)
 				mockGetBucketLogging("", "", 2)
 				mockGetBucketPolicy("", 2)
+				mockGetBucketWebsite("", "", "", "", 2)
 				mockHeadBucket(1)
 
 				instance = &awsv1beta1.S3Bucket{
@@ -333,6 +412,7 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 				mockGetBucketEncryption("", "", 4)
 				mockGetBucketVersioning(false, 4)
 				mockGetBucketLogging("", "", 4)
+				mockGetBucketWebsite("", "", "", "", 4)
 				mockGetBucketPolicy("", 1)
 
 				policyAllow := `{"Version": "2012-10-17","Statement": [{"Effect": "Allow"}]}`
@@ -418,6 +498,7 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 				mockGetBucketVersioning(false, 4)
 				mockGetBucketLogging("", "", 4)
 				mockGetBucketPolicy("", 4)
+				mockGetBucketWebsite("", "", "", "", 4)
 				mockHeadBucket(3)
 
 				instance = &awsv1beta1.S3Bucket{
@@ -476,6 +557,7 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 				mockGetBucketEncryption("", "", 4)
 				mockGetBucketVersioning(false, 4)
 				mockGetBucketLogging("", "", 4)
+				mockGetBucketWebsite("", "", "", "", 4)
 
 				tagsCreate := map[string]string{"tag1": "value1	"}
 				mockS3API.EXPECT().PutBucketTagging(
@@ -570,6 +652,7 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 				mockGetBucketEncryption("", "", 1)
 				mockGetBucketVersioning(false, 4)
 				mockGetBucketLogging("", "", 4)
+				mockGetBucketWebsite("", "", "", "", 4)
 
 				mockGetBucketEncryption("AES256", "", 1)
 				mockPutBucketEncryption("AES256", nil)
@@ -656,6 +739,7 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 				mockGetBucketEncryption("", "", 3)
 				mockGetBucketVersioning(false, 1)
 				mockGetBucketLogging("", "", 3)
+				mockGetBucketWebsite("", "", "", "", 3)
 
 				mockPutBucketVersioning(true)
 				mockGetBucketVersioning(true, 1)
@@ -715,6 +799,7 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 				mockGetBucketPolicy("", 4)
 				mockGetBucketEncryption("", "", 4)
 				mockGetBucketVersioning(false, 4)
+				mockGetBucketWebsite("", "", "", "", 4)
 				mockGetBucketLogging("", "", 1)
 
 				mockPutBucketLogging("logging-bucket1", "")
@@ -775,6 +860,91 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Eventually(requests, timeout).Should(Receive(Equal(expectedRequest)))
 				shouldSendEvent("S3Bucket", "default", objectName, "BucketLoggingDeleted")
+			})
+		})
+		Context("S3Bucket with website", func() {
+			BeforeEach(func() {
+				objectName = "s3-foo-bucket-8"
+			})
+			It("Create, update and delete S3Bucket with website", func() {
+				mockHeadBucketNotFound()
+				mockCreateBucket()
+				mockHeadBucket(3)
+				mockGetBucketTagging(map[string]string{}, 4)
+				mockGetBucketPolicy("", 4)
+				mockGetBucketEncryption("", "", 4)
+				mockGetBucketVersioning(false, 4)
+				mockGetBucketLogging("", "", 4)
+				mockGetBucketWebsite("", "", "", "", 1)
+
+				routingRules := `[{"Redirect":{"ReplaceKeyPrefixWith":"documents/"},"Condition":{"KeyPrefixEquals":"docs/"}}]`
+				mockPutBucketWebsite("index.html", "error.html", routingRules, "")
+				mockGetBucketWebsite("index.html", "error.html", routingRules, "", 1)
+				instance = &awsv1beta1.S3Bucket{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      objectName,
+						Namespace: "default",
+					},
+					Spec: awsv1beta1.S3BucketSpec{
+						Bucket: "test-bucket",
+						Website: &awsv1beta1.S3BucketWebsite{
+							Endpoint: &awsv1beta1.S3BucketWebsiteEndpoint{
+								IndexDocument: "index.html",
+								ErrorDocument: "error.html",
+								RoutingRules:  routingRules,
+							},
+						},
+					},
+				}
+				err := c.Create(context.TODO(), instance)
+				Expect(err).NotTo(HaveOccurred())
+				// wait for create reconcile
+				Eventually(requests, timeout).Should(Receive(Equal(expectedRequest)))
+				// wait for reconcile of status
+				Eventually(requests, timeout).Should(Receive(Equal(expectedRequest)))
+
+				shouldWaitForStatusUpdate(expectedRequest.NamespacedName,
+					awsv1beta1.S3BucketStatus{
+						ARN:                "arn:aws:s3:::test-bucket",
+						LocationConstraint: "eu-central-1",
+						Acl:                "private"})
+
+				shouldSendEvent("S3Bucket", "default", objectName, "BucketCreated")
+				shouldSendEvent("S3Bucket", "default", objectName, "BucketWebsiteCreated")
+
+				// UPDATE website config
+				mockGetBucketWebsite("index.html", "error.html", routingRules, "", 1)
+				// get latest version of the object
+				Eventually(func() error { return c.Get(context.TODO(), expectedRequest.NamespacedName, instance) }, timeout).Should(Succeed())
+
+				mockPutBucketWebsite("", "", "", "http://www.grepplabs.com")
+				instance.Spec.Website = &awsv1beta1.S3BucketWebsite{
+					Redirect: &awsv1beta1.S3BucketWebsiteRedirect{
+						Protocol: "http",
+						HostName: "www.grepplabs.com",
+					},
+				}
+
+				err = c.Update(context.TODO(), instance)
+				Expect(err).NotTo(HaveOccurred())
+				// wait for update reconcile
+				Eventually(requests, timeout).Should(Receive(Equal(expectedRequest)))
+				shouldSendEvent("S3Bucket", "default", objectName, "BucketWebsiteUpdated")
+
+				// DELETE
+				mockGetBucketWebsite("", "", "", "http://www.grepplabs.com", 1)
+				mockS3API.EXPECT().DeleteBucketWebsite(
+					&s3.DeleteBucketWebsiteInput{
+						Bucket: aws.String("test-bucket"),
+					}).Return(&s3.DeleteBucketWebsiteOutput{}, nil)
+
+				// get latest version of the object
+				Eventually(func() error { return c.Get(context.TODO(), expectedRequest.NamespacedName, instance) }, timeout).Should(Succeed())
+				instance.Spec.Website = nil
+				err = c.Update(context.TODO(), instance)
+				Expect(err).NotTo(HaveOccurred())
+				Eventually(requests, timeout).Should(Receive(Equal(expectedRequest)))
+				shouldSendEvent("S3Bucket", "default", objectName, "BucketWebsiteDeleted")
 			})
 		})
 
