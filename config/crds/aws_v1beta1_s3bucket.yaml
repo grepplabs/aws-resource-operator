@@ -43,6 +43,59 @@ spec:
             bucket:
               description: The name of the bucket
               type: string
+            corsConfiguration:
+              description: The Cross-origin resource sharing (CORS)
+              properties:
+                corsRules:
+                  description: CORS rules
+                  items:
+                    properties:
+                      allowedHeaders:
+                        description: Specifies which headers are allowed in a pre-flight
+                          OPTIONS request.
+                        items:
+                          type: string
+                        type: array
+                      allowedMethods:
+                        description: Identifies HTTP methods that the domain/origin
+                          specified in the rule is allowed to execute.
+                        items:
+                          enum:
+                          - GET
+                          - PUT
+                          - POST
+                          - DELETE
+                          - HEAD
+                          type: string
+                        minItems: 1
+                        type: array
+                      allowedOrigins:
+                        description: One or more origins you want customers to be
+                          able to access the bucket from.
+                        items:
+                          type: string
+                        minItems: 1
+                        type: array
+                      exposeHeaders:
+                        description: One or more headers in the response that you
+                          want customers to be able to access from their applications
+                          (for example, from a JavaScript XMLHttpRequest object).
+                        items:
+                          type: string
+                        type: array
+                      maxAgeSeconds:
+                        description: The time in seconds that your browser is to cache
+                          the preflight response for the specified resource.
+                        format: int64
+                        type: integer
+                    required:
+                    - allowedMethods
+                    - allowedOrigins
+                    type: object
+                  type: array
+              required:
+              - corsRules
+              type: object
             deleteStrategy:
               description: The bucket delete strategy. Defaults to "Delete"
               enum:

@@ -309,6 +309,27 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 				},
 			}).Return(&s3.PutBucketWebsiteOutput{}, nil)
 		}
+
+		mockGetBucketCors = func(times int, rules ...*awsv1beta1.S3BucketCORSRule) {
+			var corsRules []*s3.CORSRule
+			if len(rules) != 0 {
+				corsRules := make([]*s3.CORSRule, 0)
+				for _, rule := range rules {
+					corsRule := &s3.CORSRule{
+						AllowedHeaders: aws.StringSlice(rule.AllowedHeaders),
+						AllowedMethods: aws.StringSlice(rule.AllowedMethods),
+						AllowedOrigins: aws.StringSlice(rule.AllowedOrigins),
+						ExposeHeaders:  aws.StringSlice(rule.ExposeHeaders),
+						MaxAgeSeconds:  rule.MaxAgeSeconds,
+					}
+					corsRules = append(corsRules, corsRule)
+				}
+			}
+			result := &s3.GetBucketCorsOutput{CORSRules: corsRules}
+			mockS3API.EXPECT().GetBucketCors(&s3.GetBucketCorsInput{
+				Bucket: aws.String("test-bucket"),
+			}).Return(result, nil).Times(times)
+		}
 	)
 	BeforeEach(func() {
 		mockCtrl = gomock.NewController(GinkgoT())
@@ -372,6 +393,8 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 				mockGetBucketLogging("", "", 2)
 				mockGetBucketPolicy("", 2)
 				mockGetBucketWebsite("", "", "", "", 2)
+				mockGetBucketCors(2)
+
 				mockHeadBucket(1)
 
 				instance = &awsv1beta1.S3Bucket{
@@ -413,6 +436,8 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 				mockGetBucketVersioning(false, 4)
 				mockGetBucketLogging("", "", 4)
 				mockGetBucketWebsite("", "", "", "", 4)
+				mockGetBucketCors(4)
+
 				mockGetBucketPolicy("", 1)
 
 				policyAllow := `{"Version": "2012-10-17","Statement": [{"Effect": "Allow"}]}`
@@ -499,6 +524,7 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 				mockGetBucketLogging("", "", 4)
 				mockGetBucketPolicy("", 4)
 				mockGetBucketWebsite("", "", "", "", 4)
+				mockGetBucketCors(4)
 				mockHeadBucket(3)
 
 				instance = &awsv1beta1.S3Bucket{
@@ -558,6 +584,7 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 				mockGetBucketVersioning(false, 4)
 				mockGetBucketLogging("", "", 4)
 				mockGetBucketWebsite("", "", "", "", 4)
+				mockGetBucketCors(4)
 
 				tagsCreate := map[string]string{"tag1": "value1	"}
 				mockS3API.EXPECT().PutBucketTagging(
@@ -653,6 +680,7 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 				mockGetBucketVersioning(false, 4)
 				mockGetBucketLogging("", "", 4)
 				mockGetBucketWebsite("", "", "", "", 4)
+				mockGetBucketCors(4)
 
 				mockGetBucketEncryption("AES256", "", 1)
 				mockPutBucketEncryption("AES256", nil)
@@ -740,6 +768,7 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 				mockGetBucketVersioning(false, 1)
 				mockGetBucketLogging("", "", 3)
 				mockGetBucketWebsite("", "", "", "", 3)
+				mockGetBucketCors(3)
 
 				mockPutBucketVersioning(true)
 				mockGetBucketVersioning(true, 1)
@@ -800,6 +829,7 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 				mockGetBucketEncryption("", "", 4)
 				mockGetBucketVersioning(false, 4)
 				mockGetBucketWebsite("", "", "", "", 4)
+				mockGetBucketCors(4)
 				mockGetBucketLogging("", "", 1)
 
 				mockPutBucketLogging("logging-bucket1", "")
@@ -875,6 +905,7 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 				mockGetBucketEncryption("", "", 4)
 				mockGetBucketVersioning(false, 4)
 				mockGetBucketLogging("", "", 4)
+				mockGetBucketCors(4)
 				mockGetBucketWebsite("", "", "", "", 1)
 
 				routingRules := `[{"Redirect":{"ReplaceKeyPrefixWith":"documents/"},"Condition":{"KeyPrefixEquals":"docs/"}}]`

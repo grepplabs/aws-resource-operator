@@ -59,6 +59,9 @@ type S3BucketSpec struct {
 	// The static website hosting
 	// +optional
 	Website *S3BucketWebsite `json:"website,omitempty"`
+	// The Cross-origin resource sharing (CORS)
+	// +optional
+	CORSConfiguration *S3BucketCORSConfiguration `json:"corsConfiguration,omitempty"`
 }
 
 type DeleteStrategyType string
@@ -173,6 +176,39 @@ type S3BucketWebsiteRedirect struct {
 	// +optional
 	// +kubebuilder:validation:Enum=http,https
 	Protocol string `json:"protocol,omitempty"`
+}
+
+// Container for CORS configuration rules.
+type S3BucketCORSConfiguration struct {
+	// CORS rules
+	CORSRules []S3BucketCORSRule `json:"corsRules"`
+}
+
+// Cross-origin resource sharing (CORS)
+type S3BucketCORSRule struct {
+	// Specifies which headers are allowed in a pre-flight OPTIONS request.
+	// +optional
+	AllowedHeaders []string `json:"allowedHeaders,omitempty"`
+
+	// Identifies HTTP methods that the domain/origin specified in the rule is allowed
+	// to execute.
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:Enum=GET,PUT,POST,DELETE,HEAD
+	AllowedMethods []string `json:"allowedMethods"`
+
+	// One or more origins you want customers to be able to access the bucket from.
+	// +kubebuilder:validation:MinItems=1
+	AllowedOrigins []string `json:"allowedOrigins"`
+
+	// One or more headers in the response that you want customers to be able to
+	// access from their applications (for example, from a JavaScript XMLHttpRequest object).
+	// +optional
+	ExposeHeaders []string `json:"exposeHeaders,omitempty"`
+
+	// The time in seconds that your browser is to cache the preflight response
+	// for the specified resource.
+	// +optional
+	MaxAgeSeconds *int64 `json:"maxAgeSeconds,omitempty"`
 }
 
 // +genclient

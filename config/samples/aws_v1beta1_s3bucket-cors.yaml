@@ -1,0 +1,30 @@
+apiVersion: aws.grepplabs.com/v1beta1
+kind: S3Bucket
+metadata:
+  labels:
+    controller-tools.k8s.io: "1.0"
+  name: s3bucket-sample
+spec:
+  bucket: fm-new-aws-operator-bucket2
+  region: eu-central-1
+  deleteStrategy: Delete
+  ownershipStrategy: Created
+  corsConfiguration:
+    corsRules:
+      - allowedOrigins: ["http://www.example1.com"]
+        allowedMethods: ["PUT","POST","DELETE"]
+        allowedHeaders: ["*"]
+      - allowedOrigins: ["http://www.example2.com"]
+        allowedMethods: ["DELETE","POST","PUT"]
+        allowedHeaders: ["*"]
+      - allowedMethods: ["GET"]
+        allowedOrigins: ["*"]
+      - allowedOrigins: ["http://www.example3.com"]
+        allowedMethods: ["POST","PUT","DELETE"]
+        allowedHeaders: ["*"]
+        maxAgeSeconds: 3000
+      - allowedOrigins: ["http://www.example3.com"]
+        allowedMethods: ["POST","PUT","DELETE"]
+        allowedHeaders: ["*"]
+        maxAgeSeconds: 3000
+        exposeHeaders: ["x-amz-server-side-encryption","x-amz-request-id","x-amz-id-2"]

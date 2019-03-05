@@ -21,6 +21,8 @@ import (
 	"fmt"
 	"github.com/aws/aws-sdk-go/service/s3/s3iface"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"reflect"
 	"regexp"
 	"strings"
@@ -216,6 +218,9 @@ func (r ReconcileS3Bucket) validateInstance(instance *awsv1beta1.S3Bucket) *awsc
 			return awsclient.NonRetryableError(fmt.Errorf("error validating S3 bucket Website: Redirect OR Endpoint must be set"), "BucketWebsiteValidation")
 		}
 	}
+	if instance.Spec.CORSConfiguration != nil && len(instance.Spec.CORSConfiguration.CORSRules) == 0 {
+		return awsclient.NonRetryableError(fmt.Errorf("error validating S3 bucket CORS: corsRules are empty"), "BucketWebsiteValidation")
+	}
 	if instance.Status.ARN != "" {
 		bucketARN := r.bucketARN(instance)
 		if instance.Status.ARN != bucketARN {
@@ -388,6 +393,9 @@ func (r ReconcileS3Bucket) reconcileBucket(instance *awsv1beta1.S3Bucket) *awscl
 		return err
 	}
 	if err := r.reconcileBucketWebsite(instance); err != nil {
+		return err
+	}
+	if err := r.reconcileBucketCORS(instance); err != nil {
 		return err
 	}
 	return nil
@@ -632,6 +640,125 @@ func (r ReconcileS3Bucket) readBucketVersioning(bucket string) (*awsv1beta1.S3Bu
 	return result, nil
 }
 
+func (r ReconcileS3Bucket) reconcileBucketCORS(instance *awsv1beta1.S3Bucket) *awsclient.RetryError {
+	bucket := instance.Spec.Bucket
+	currentCors, retryError := r.readBucketCORSConfiguration(bucket)
+
+	if retryError != nil {
+		return retryError
+	}
+	desiredCors := instance.Spec.CORSConfiguration
+
+	if currentCors == nil && desiredCors == nil {
+		return nil
+	} else if currentCors == nil && desiredCors != nil {
+		logInfof("Creating bucket cors (%s): (%v)", bucket, desiredCors.CORSRules)
+
+		err := r.updateBucketCors(bucket, desiredCors)
+		if err != nil {
+			if awsclient.IsAWSCode(err, []string{s3.ErrCodeNoSuchBucket}) {
+				return awsclient.RetryableError(err, "PutBucketCorsFailed")
+			}
+			return awsclient.NonRetryableError(fmt.Errorf("error create S3 Bucket cors (%s): %s", bucket, err), "PutBucketCorsFailed")
+		}
+		r.sendEvent(instance, apiv1.EventTypeNormal, "BucketCorsCreated", "Bucket cors created")
+	} else if currentCors != nil && desiredCors == nil {
+		log.Info("Deleting bucket cors", "bucket", bucket)
+
+		_, err := r.s3conn.DeleteBucketCors(&s3.DeleteBucketCorsInput{
+			Bucket: aws.String(bucket),
+		})
+		if err != nil {
+			if awsclient.IsAWSCode(err, []string{s3.ErrCodeNoSuchBucket}) {
+				return awsclient.RetryableError(err, "DeleteBucketCors")
+			}
+			return awsclient.NonRetryableError(fmt.Errorf("error delete S3 Bucket cors (%s): %s", bucket, err), "DeleteBucketCorsInputFailed")
+		}
+		r.sendEvent(instance, apiv1.EventTypeNormal, "BucketCorsDeleted", "Bucket cors deleted")
+	} else {
+		if !cmp.Equal(currentCors, desiredCors, cmpopts.EquateEmpty()) {
+			logInfof("Updating bucket cors (%s): from (%v) to (%v)", bucket, currentCors.CORSRules, desiredCors.CORSRules)
+			err := r.updateBucketCors(bucket, desiredCors)
+			if err != nil {
+				if awsclient.IsAWSCode(err, []string{s3.ErrCodeNoSuchBucket}) {
+					return awsclient.RetryableError(err, "PutBucketCorsFailed")
+				}
+				return awsclient.NonRetryableError(fmt.Errorf("error update S3 Bucket cors (%s): %s", bucket, err), "PutBucketCorsFailed")
+			}
+			r.sendEvent(instance, apiv1.EventTypeNormal, "BucketCorsUpdated", "Bucket cors updated")
+		}
+	}
+	return nil
+}
+
+func (r ReconcileS3Bucket) updateBucketCors(bucket string, desiredCors *awsv1beta1.S3BucketCORSConfiguration) error {
+
+	corsRules := make([]*s3.CORSRule, 0)
+	for _, desiredRrule := range desiredCors.CORSRules {
+		corsRule := &s3.CORSRule{
+			AllowedHeaders: aws.StringSlice(desiredRrule.AllowedHeaders),
+			AllowedMethods: aws.StringSlice(desiredRrule.AllowedMethods),
+			AllowedOrigins: aws.StringSlice(desiredRrule.AllowedOrigins),
+			ExposeHeaders:  aws.StringSlice(desiredRrule.ExposeHeaders),
+			MaxAgeSeconds:  desiredRrule.MaxAgeSeconds,
+		}
+		corsRules = append(corsRules, corsRule)
+	}
+	_, err := r.s3conn.PutBucketCors(&s3.PutBucketCorsInput{
+		Bucket: aws.String(bucket),
+		CORSConfiguration: &s3.CORSConfiguration{
+			CORSRules: corsRules,
+		},
+	})
+	return err
+
+}
+
+func (r ReconcileS3Bucket) readBucketCORSConfiguration(bucket string) (*awsv1beta1.S3BucketCORSConfiguration, *awsclient.RetryError) {
+	cors, err := r.s3conn.GetBucketCors(&s3.GetBucketCorsInput{
+		Bucket: aws.String(bucket),
+	})
+
+	if err != nil {
+		if awsclient.IsAWSCode(err, []string{s3.ErrCodeNoSuchBucket}) {
+			return nil, awsclient.RetryableError(err, "GetBucketCorsFailed")
+		}
+		if !awsclient.IsAWSCode(err, []string{"NoSuchCORSConfiguration"}) {
+			return nil, awsclient.NonRetryableError(fmt.Errorf("error getting S3 Bucket CORS configuration (%s): %s", bucket, err), "GetBucketCorsFailed")
+		}
+	}
+	if cors == nil {
+		return nil, nil
+	}
+
+	if cors.CORSRules == nil || len(cors.CORSRules) == 0 {
+		return nil, nil
+	}
+
+	corsConfiguration := awsv1beta1.S3BucketCORSConfiguration{
+		CORSRules: []awsv1beta1.S3BucketCORSRule{},
+	}
+	for _, ruleObject := range cors.CORSRules {
+		corsRule := awsv1beta1.S3BucketCORSRule{
+			AllowedHeaders: toStringArray(ruleObject.AllowedHeaders),
+			AllowedMethods: toStringArray(ruleObject.AllowedMethods),
+			AllowedOrigins: toStringArray(ruleObject.AllowedOrigins),
+			ExposeHeaders:  toStringArray(ruleObject.ExposeHeaders),
+			MaxAgeSeconds:  ruleObject.MaxAgeSeconds,
+		}
+		corsConfiguration.CORSRules = append(corsConfiguration.CORSRules, corsRule)
+	}
+	return &corsConfiguration, nil
+}
+
+func toStringArray(strings []*string) []string {
+	if strings != nil {
+		return aws.StringValueSlice(strings)
+	} else {
+		return []string{}
+	}
+}
+
 func (r ReconcileS3Bucket) reconcileBucketWebsite(instance *awsv1beta1.S3Bucket) *awsclient.RetryError {
 	bucket := instance.Spec.Bucket
 	currentWebsite, retryError := r.readBucketWebsite(bucket)
@@ -663,7 +790,7 @@ func (r ReconcileS3Bucket) reconcileBucketWebsite(instance *awsv1beta1.S3Bucket)
 			if awsclient.IsAWSCode(err, []string{s3.ErrCodeNoSuchBucket}) {
 				return awsclient.RetryableError(err, "DeleteBucketWebsite")
 			}
-			return awsclient.NonRetryableError(fmt.Errorf("error delete S3 Bucket website (%s): %s", bucket, err), "PutBuckeDeleteBucketWebsitetWebsiteFailed")
+			return awsclient.NonRetryableError(fmt.Errorf("error delete S3 Bucket website (%s): %s", bucket, err), "DeleteBucketWebsiteFailed")
 		}
 		r.sendEvent(instance, apiv1.EventTypeNormal, "BucketWebsiteDeleted", "Bucket website deleted")
 
