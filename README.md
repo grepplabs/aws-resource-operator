@@ -28,3 +28,4 @@ In contrast to the [aws-service-operator](https://github.com/awslabs/aws-service
     * TargetGrants are not supported
 - [website](https://docs.aws.amazon.com/cli/latest/reference/s3api/put-bucket-website.html)
 - [cors](https://docs.aws.amazon.com/cli/latest/reference/s3api/put-bucket-cors.html)
+- [lifecycle](https://docs.aws.amazon.com/cli/latest/reference/s3api/put-bucket-lifecycle-configuration.html)
