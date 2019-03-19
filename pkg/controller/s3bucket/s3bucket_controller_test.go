@@ -310,25 +310,36 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 			}).Return(&s3.PutBucketWebsiteOutput{}, nil)
 		}
 
-		mockGetBucketCors = func(times int, rules ...*awsv1beta1.S3BucketCORSRule) {
-			var corsRules []*s3.CORSRule
-			if len(rules) != 0 {
-				corsRules := make([]*s3.CORSRule, 0)
-				for _, rule := range rules {
-					corsRule := &s3.CORSRule{
-						AllowedHeaders: aws.StringSlice(rule.AllowedHeaders),
-						AllowedMethods: aws.StringSlice(rule.AllowedMethods),
-						AllowedOrigins: aws.StringSlice(rule.AllowedOrigins),
-						ExposeHeaders:  aws.StringSlice(rule.ExposeHeaders),
-						MaxAgeSeconds:  rule.MaxAgeSeconds,
-					}
-					corsRules = append(corsRules, corsRule)
+		toCORSRule = func(rules ...*awsv1beta1.S3BucketCORSRule) []*s3.CORSRule {
+			corsRules := make([]*s3.CORSRule, 0)
+			for _, rule := range rules {
+				corsRule := &s3.CORSRule{
+					AllowedHeaders: aws.StringSlice(rule.AllowedHeaders),
+					AllowedMethods: aws.StringSlice(rule.AllowedMethods),
+					AllowedOrigins: aws.StringSlice(rule.AllowedOrigins),
+					ExposeHeaders:  aws.StringSlice(rule.ExposeHeaders),
+					MaxAgeSeconds:  rule.MaxAgeSeconds,
 				}
+				corsRules = append(corsRules, corsRule)
 			}
-			result := &s3.GetBucketCorsOutput{CORSRules: corsRules}
+			return corsRules
+		}
+
+		mockGetBucketCors = func(times int, rules ...*awsv1beta1.S3BucketCORSRule) {
+			result := &s3.GetBucketCorsOutput{CORSRules: toCORSRule(rules...)}
 			mockS3API.EXPECT().GetBucketCors(&s3.GetBucketCorsInput{
 				Bucket: aws.String("test-bucket"),
 			}).Return(result, nil).Times(times)
+		}
+
+		mockPutBucketCors = func(rules ...*awsv1beta1.S3BucketCORSRule) {
+			mockS3API.EXPECT().PutBucketCors(&s3.PutBucketCorsInput{
+				Bucket: aws.String("test-bucket"),
+				CORSConfiguration: &s3.CORSConfiguration{
+					CORSRules: toCORSRule(rules...),
+				},
+			}).Return(&s3.PutBucketCorsOutput{}, nil)
+
 		}
 	)
 	BeforeEach(func() {
@@ -978,7 +989,104 @@ var _ = Describe("S3Bucket Reconcile Suite", func() {
 				shouldSendEvent("S3Bucket", "default", objectName, "BucketWebsiteDeleted")
 			})
 		})
+		Context("S3Bucket with cors", func() {
+			BeforeEach(func() {
+				objectName = "s3-foo-bucket-9"
+			})
+			It("Create, update and delete S3Bucket with cors", func() {
+				mockHeadBucketNotFound()
+				mockCreateBucket()
+				mockHeadBucket(3)
+				mockGetBucketTagging(map[string]string{}, 4)
+				mockGetBucketPolicy("", 4)
+				mockGetBucketEncryption("", "", 4)
+				mockGetBucketVersioning(false, 4)
+				mockGetBucketLogging("", "", 4)
+				mockGetBucketWebsite("", "", "", "", 4)
 
+				mockGetBucketCors(1)
+
+				rule1 := &awsv1beta1.S3BucketCORSRule{
+					AllowedMethods: []string{"PUT", "POST", "DELETE"},
+					AllowedOrigins: []string{"http://www.example1.com"},
+					AllowedHeaders: []string{"*"}}
+				maxAgeSeconds := int64(3000)
+				rule2 := &awsv1beta1.S3BucketCORSRule{
+					AllowedMethods: []string{"GET"},
+					AllowedOrigins: []string{"http://www.example2.com"},
+					AllowedHeaders: []string{"Host"},
+					ExposeHeaders:  []string{"x-amz-server-side-encryption", "x-amz-request-id", "x-amz-id-2"},
+					MaxAgeSeconds:  &maxAgeSeconds}
+
+				mockPutBucketCors(rule1)
+				mockGetBucketCors(1, rule1)
+
+				instance = &awsv1beta1.S3Bucket{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      objectName,
+						Namespace: "default",
+					},
+					Spec: awsv1beta1.S3BucketSpec{
+						Bucket: "test-bucket",
+						CORSConfiguration: &awsv1beta1.S3BucketCORSConfiguration{
+							CORSRules: []awsv1beta1.S3BucketCORSRule{
+								*rule1,
+							},
+						},
+					},
+				}
+				err := c.Create(context.TODO(), instance)
+				Expect(err).NotTo(HaveOccurred())
+				// wait for create reconcile
+				Eventually(requests, timeout).Should(Receive(Equal(expectedRequest)))
+				// wait for reconcile of status
+				Eventually(requests, timeout).Should(Receive(Equal(expectedRequest)))
+
+				shouldWaitForStatusUpdate(expectedRequest.NamespacedName,
+					awsv1beta1.S3BucketStatus{
+						ARN:                "arn:aws:s3:::test-bucket",
+						LocationConstraint: "eu-central-1",
+						Acl:                "private"})
+
+				shouldSendEvent("S3Bucket", "default", objectName, "BucketCreated")
+				shouldSendEvent("S3Bucket", "default", objectName, "BucketCorsCreated")
+
+				// UPDATE
+				mockGetBucketCors(1, rule1)
+				// get latest version of the object
+				Eventually(func() error { return c.Get(context.TODO(), expectedRequest.NamespacedName, instance) }, timeout).Should(Succeed())
+
+				mockPutBucketCors(rule1, rule2)
+
+				instance.Spec.CORSConfiguration = &awsv1beta1.S3BucketCORSConfiguration{
+					CORSRules: []awsv1beta1.S3BucketCORSRule{
+						*rule1,
+						*rule2,
+					},
+				}
+
+				err = c.Update(context.TODO(), instance)
+				Expect(err).NotTo(HaveOccurred())
+				// wait for update reconcile
+				Eventually(requests, timeout).Should(Receive(Equal(expectedRequest)))
+				shouldSendEvent("S3Bucket", "default", objectName, "BucketCorsUpdated")
+
+				// DELETE
+				mockGetBucketCors(1, rule1, rule2)
+				mockS3API.EXPECT().DeleteBucketCors(
+					&s3.DeleteBucketCorsInput{
+						Bucket: aws.String("test-bucket"),
+					}).Return(&s3.DeleteBucketCorsOutput{}, nil)
+
+				// get latest version of the object
+				Eventually(func() error { return c.Get(context.TODO(), expectedRequest.NamespacedName, instance) }, timeout).Should(Succeed())
+				instance.Spec.CORSConfiguration = nil
+				err = c.Update(context.TODO(), instance)
+				Expect(err).NotTo(HaveOccurred())
+				Eventually(requests, timeout).Should(Receive(Equal(expectedRequest)))
+				shouldSendEvent("S3Bucket", "default", objectName, "BucketCorsDeleted")
+			})
+		})
 	})
 
 	AfterEach(func() {
