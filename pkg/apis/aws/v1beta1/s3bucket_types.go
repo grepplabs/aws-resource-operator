@@ -62,6 +62,9 @@ type S3BucketSpec struct {
 	// The Cross-origin resource sharing (CORS)
 	// +optional
 	CORSConfiguration *S3BucketCORSConfiguration `json:"corsConfiguration,omitempty"`
+	// The lifecycle configuration
+	// +optional
+	Lifecycle *S3BucketLifecycle `json:"lifecycle,omitempty"`
 }
 
 type DeleteStrategyType string
@@ -209,6 +212,122 @@ type S3BucketCORSRule struct {
 	// for the specified resource.
 	// +optional
 	MaxAgeSeconds *int64 `json:"maxAgeSeconds,omitempty"`
+}
+
+// Container for lifecycle configuration rules.
+type S3BucketLifecycle struct {
+	// CORS rules
+	LifecycleRules []S3BucketLifecycleRule `json:"lifecycleRules"`
+}
+
+// Lifecycle rule
+type S3BucketLifecycleRule struct {
+	// Unique identifier for the rule.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=255
+	ID string `json:"id"`
+
+	// Prefix identifying one or more objects to which the rule applies.
+	// +optional
+	Prefix string `json:"prefix,omitempty"`
+
+	// Enable lifecycle rule.
+	Enabled bool `json:"enabled"`
+
+	// Lifecycle configuration to tell Amazon S3 to transition current objects to another Amazon S3 storage class.
+	// +optional
+	Transition *S3BucketLifecycleTransition `json:"transition,omitempty"`
+
+	// Specifies when current object versions expire.
+	// +optional
+	Expiration *S3BucketLifecycleExpiration `json:"expiration,omitempty"`
+
+	// Container for the transition rule that describes when noncurrent objects
+	// transition to the STANDARD_IA, ONEZONE_IA, INTELLIGENT_TIERING or GLACIER
+	// storage class. If your bucket is versioning-enabled (or versioning is suspended),
+	// you can set this action to request that Amazon S3 transition noncurrent object
+	// versions to the STANDARD_IA, ONEZONE_IA, INTELLIGENT_TIERING or GLACIER storage
+	// class at a specific period in the object's lifetime.
+	// +optional
+	NoncurrentVersionTransition *S3BucketLifecycleNoncurrentVersionTransition `json:"noncurrentVersionTransition,omitempty"`
+
+	// Specifies when noncurrent object versions expire. Upon expiration, Amazon
+	// S3 permanently deletes the noncurrent object versions. You set this lifecycle
+	// configuration action on a bucket that has versioning enabled (or suspended)
+	// to request that Amazon S3 delete noncurrent object versions at a specific
+	// period in the object's lifetime.
+	// +optional
+	NoncurrentVersionExpiration *S3BucketLifecycleNoncurrentVersionExpiration `json:"noncurrentVersionExpiration,omitempty"`
+
+	// Specifies the days since the initiation of an Incomplete Multipart Upload
+	// that Lifecycle will wait before permanently removing all parts of the upload.
+	// +optional
+	AbortIncompleteMultipartUpload *S3BucketLifecycleAbortIncompleteMultipartUpload `json:"abortIncompleteMultipartUpload,omitempty"`
+}
+
+type S3BucketLifecycleTransition struct {
+
+	// Indicates at what date the object is to be moved or deleted. Should be in
+	// GMT ISO 8601 Format.
+	// +optional
+	Date *string `json:"date,omitempty"`
+
+	// Indicates the lifetime, in days, of the objects that are subject to the rule.
+	// The value must be a non-zero positive integer.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	Days *int64 `json:"days"`
+
+	// The class of storage used to store the object.
+	// +kubebuilder:validation:Enum=GLACIER,STANDARD_IA,ONEZONE_IA,INTELLIGENT_TIERING
+	StorageClass string `json:"storageClass"`
+}
+
+type S3BucketLifecycleExpiration struct {
+	// Indicates at what date the object is to be moved or deleted. Should be in
+	// GMT ISO 8601 Format.
+	// +optional
+	Date *string `json:"date,omitempty"`
+
+	// Indicates the lifetime, in days, of the objects that are subject to the rule.
+	// The value must be a non-zero positive integer.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	Days *int64 `json:"days,omitempty"`
+
+	// Indicates whether Amazon S3 will remove a delete marker with no noncurrent
+	// versions. If set to true, the delete marker will be expired; if set to false
+	// the policy takes no action. This cannot be specified with Days or Date in
+	// a Lifecycle Expiration Policy.
+	// +optional
+	ExpiredObjectDeleteMarker *bool `json:"expiredObjectDeleteMarker,omitempty"`
+}
+
+type S3BucketLifecycleNoncurrentVersionTransition struct {
+	// Indicates the lifetime, in days, of the objects that are subject to the rule.
+	// The value must be a non-zero positive integer.
+	// +kubebuilder:validation:Minimum=1
+	Days int64 `json:"days"`
+
+	// The class of storage used to store the object.
+	// +kubebuilder:validation:Enum=GLACIER,STANDARD_IA,ONEZONE_IA,INTELLIGENT_TIERING
+	StorageClass string `json:"storageClass"`
+}
+
+type S3BucketLifecycleNoncurrentVersionExpiration struct {
+	// Specifies the number of days an object is noncurrent before Amazon S3 can
+	// perform the associated action.
+	// +kubebuilder:validation:Minimum=1
+	Days int64 `json:"days"`
+}
+
+// Specifies the days since the initiation of an Incomplete Multipart Upload
+// that Lifecycle will wait before permanently removing all parts of the upload.
+type S3BucketLifecycleAbortIncompleteMultipartUpload struct {
+	// Indicates the number of days that must pass since initiation for Lifecycle
+	// to abort an Incomplete Multipart Upload.
+	// +kubebuilder:validation:Minimum=1
+	DaysAfterInitiation int64 `json:"daysAfterInitiation"`
 }
 
 // +genclient

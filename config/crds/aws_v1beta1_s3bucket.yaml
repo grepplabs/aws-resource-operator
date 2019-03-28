@@ -103,6 +103,145 @@ spec:
               - Skip
               - Force
               type: string
+            lifecycle:
+              description: The lifecycle configuration
+              properties:
+                lifecycleRules:
+                  description: CORS rules
+                  items:
+                    properties:
+                      abortIncompleteMultipartUpload:
+                        description: Specifies the days since the initiation of an
+                          Incomplete Multipart Upload that Lifecycle will wait before
+                          permanently removing all parts of the upload.
+                        properties:
+                          daysAfterInitiation:
+                            description: Indicates the number of days that must pass
+                              since initiation for Lifecycle to abort an Incomplete
+                              Multipart Upload.
+                            format: int64
+                            minimum: 1
+                            type: integer
+                        required:
+                        - daysAfterInitiation
+                        type: object
+                      enabled:
+                        description: Enable lifecycle rule.
+                        type: boolean
+                      expiration:
+                        description: Specifies when current object versions expire.
+                        properties:
+                          date:
+                            description: Indicates at what date the object is to be
+                              moved or deleted. Should be in GMT ISO 8601 Format.
+                            type: string
+                          days:
+                            description: Indicates the lifetime, in days, of the objects
+                              that are subject to the rule. The value must be a non-zero
+                              positive integer.
+                            format: int64
+                            minimum: 1
+                            type: integer
+                          expiredObjectDeleteMarker:
+                            description: Indicates whether Amazon S3 will remove a
+                              delete marker with no noncurrent versions. If set to
+                              true, the delete marker will be expired; if set to false
+                              the policy takes no action. This cannot be specified
+                              with Days or Date in a Lifecycle Expiration Policy.
+                            type: boolean
+                        type: object
+                      id:
+                        description: Unique identifier for the rule.
+                        maxLength: 255
+                        minLength: 1
+                        type: string
+                      noncurrentVersionExpiration:
+                        description: Specifies when noncurrent object versions expire.
+                          Upon expiration, Amazon S3 permanently deletes the noncurrent
+                          object versions. You set this lifecycle configuration action
+                          on a bucket that has versioning enabled (or suspended) to
+                          request that Amazon S3 delete noncurrent object versions
+                          at a specific period in the object's lifetime.
+                        properties:
+                          days:
+                            description: Specifies the number of days an object is
+                              noncurrent before Amazon S3 can perform the associated
+                              action.
+                            format: int64
+                            minimum: 1
+                            type: integer
+                        required:
+                        - days
+                        type: object
+                      noncurrentVersionTransition:
+                        description: Container for the transition rule that describes
+                          when noncurrent objects transition to the STANDARD_IA, ONEZONE_IA,
+                          INTELLIGENT_TIERING or GLACIER storage class. If your bucket
+                          is versioning-enabled (or versioning is suspended), you
+                          can set this action to request that Amazon S3 transition
+                          noncurrent object versions to the STANDARD_IA, ONEZONE_IA,
+                          INTELLIGENT_TIERING or GLACIER storage class at a specific
+                          period in the object's lifetime.
+                        properties:
+                          days:
+                            description: Indicates the lifetime, in days, of the objects
+                              that are subject to the rule. The value must be a non-zero
+                              positive integer.
+                            format: int64
+                            minimum: 1
+                            type: integer
+                          storageClass:
+                            description: The class of storage used to store the object.
+                            enum:
+                            - GLACIER
+                            - STANDARD_IA
+                            - ONEZONE_IA
+                            - INTELLIGENT_TIERING
+                            type: string
+                        required:
+                        - days
+                        - storageClass
+                        type: object
+                      prefix:
+                        description: Prefix identifying one or more objects to which
+                          the rule applies.
+                        type: string
+                      transition:
+                        description: Lifecycle configuration to tell Amazon S3 to
+                          transition current objects to another Amazon S3 storage
+                          class.
+                        properties:
+                          date:
+                            description: Indicates at what date the object is to be
+                              moved or deleted. Should be in GMT ISO 8601 Format.
+                            type: string
+                          days:
+                            description: Indicates the lifetime, in days, of the objects
+                              that are subject to the rule. The value must be a non-zero
+                              positive integer.
+                            format: int64
+                            minimum: 1
+                            type: integer
+                          storageClass:
+                            description: The class of storage used to store the object.
+                            enum:
+                            - GLACIER
+                            - STANDARD_IA
+                            - ONEZONE_IA
+                            - INTELLIGENT_TIERING
+                            type: string
+                        required:
+                        - days
+                        - storageClass
+                        type: object
+                    required:
+                    - id
+                    - enabled
+                    type: object
+                  type: array
+              required:
+              - lifecycleRules
+              type: object
             logging:
               description: The server access logging provides detailed records for
                 the requests that are made to a bucket

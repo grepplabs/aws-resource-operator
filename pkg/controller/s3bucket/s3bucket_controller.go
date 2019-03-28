@@ -398,6 +398,9 @@ func (r ReconcileS3Bucket) reconcileBucket(instance *awsv1beta1.S3Bucket) *awscl
 	if err := r.reconcileBucketCORS(instance); err != nil {
 		return err
 	}
+	if err := r.reconcileBucketLifecycle(instance); err != nil {
+		return err
+	}
 	return nil
 }
 func (r ReconcileS3Bucket) reconcileBucketTags(instance *awsv1beta1.S3Bucket) *awsclient.RetryError {
@@ -638,6 +641,102 @@ func (r ReconcileS3Bucket) readBucketVersioning(bucket string) (*awsv1beta1.S3Bu
 		result.Enabled = true
 	}
 	return result, nil
+}
+
+func (r ReconcileS3Bucket) reconcileBucketLifecycle(instance *awsv1beta1.S3Bucket) *awsclient.RetryError {
+	bucket := instance.Spec.Bucket
+	currentLifecycle, retryError := r.readBucketLifecycle(bucket)
+	if retryError != nil {
+		return retryError
+	}
+	desiredLifecycle := instance.Spec.Lifecycle
+	//TODO: implement
+	_ = currentLifecycle
+	_ = desiredLifecycle
+	return nil
+}
+
+func (r ReconcileS3Bucket) readBucketLifecycle(bucket string) (*awsv1beta1.S3BucketLifecycle, *awsclient.RetryError) {
+	lifecycle, err := r.s3conn.GetBucketLifecycle(&s3.GetBucketLifecycleInput{
+		Bucket: aws.String(bucket),
+	})
+
+	if err != nil {
+		if awsclient.IsAWSCode(err, []string{s3.ErrCodeNoSuchBucket}) {
+			return nil, awsclient.RetryableError(err, "GetBucketLifecycleFailed")
+		}
+		if !awsclient.IsAWSCode(err, []string{"NoSuchLifecycleConfiguration"}) {
+			return nil, awsclient.NonRetryableError(fmt.Errorf("error getting S3 Bucket Lifecycle configuration (%s): %s", bucket, err), "GetBucketLifecyclFailed")
+		}
+	}
+	if lifecycle == nil {
+		return nil, nil
+	}
+	if lifecycle.Rules == nil || len(lifecycle.Rules) == 0 {
+		return nil, nil
+	}
+
+	lifecycleConfiguration := awsv1beta1.S3BucketLifecycle{
+		LifecycleRules: []awsv1beta1.S3BucketLifecycleRule{},
+	}
+	for _, ruleObject := range lifecycle.Rules {
+		var transition *awsv1beta1.S3BucketLifecycleTransition
+		if ruleObject.Transition != nil {
+			var date *string
+			if ruleObject.Transition.Date != nil {
+				date = aws.String((*ruleObject.Transition.Date).Format("2006-01-02"))
+			}
+			transition = &awsv1beta1.S3BucketLifecycleTransition{
+				Days:         ruleObject.Transition.Days,
+				Date:         date,
+				StorageClass: aws.StringValue(ruleObject.Transition.StorageClass),
+			}
+		}
+		var expiration *awsv1beta1.S3BucketLifecycleExpiration
+		if ruleObject.Expiration != nil {
+			var date *string
+			if ruleObject.Expiration.Date != nil {
+				date = aws.String((*ruleObject.Expiration.Date).Format("2006-01-02"))
+			}
+			expiration = &awsv1beta1.S3BucketLifecycleExpiration{
+				Days:                      ruleObject.Expiration.Days,
+				Date:                      date,
+				ExpiredObjectDeleteMarker: ruleObject.Expiration.ExpiredObjectDeleteMarker,
+			}
+		}
+		var noncurrentVersionTransition *awsv1beta1.S3BucketLifecycleNoncurrentVersionTransition
+		if ruleObject.NoncurrentVersionTransition != nil {
+			noncurrentVersionTransition = &awsv1beta1.S3BucketLifecycleNoncurrentVersionTransition{
+				Days:         aws.Int64Value(ruleObject.NoncurrentVersionTransition.NoncurrentDays),
+				StorageClass: aws.StringValue(ruleObject.NoncurrentVersionTransition.StorageClass),
+			}
+		}
+		var noncurrentVersionExpiration *awsv1beta1.S3BucketLifecycleNoncurrentVersionExpiration
+		if ruleObject.NoncurrentVersionExpiration != nil {
+			noncurrentVersionExpiration = &awsv1beta1.S3BucketLifecycleNoncurrentVersionExpiration{
+				Days: aws.Int64Value(ruleObject.NoncurrentVersionExpiration.NoncurrentDays),
+			}
+		}
+		var abortIncompleteMultipartUpload *awsv1beta1.S3BucketLifecycleAbortIncompleteMultipartUpload
+		if ruleObject.AbortIncompleteMultipartUpload != nil {
+			abortIncompleteMultipartUpload = &awsv1beta1.S3BucketLifecycleAbortIncompleteMultipartUpload{
+				DaysAfterInitiation: aws.Int64Value(ruleObject.AbortIncompleteMultipartUpload.DaysAfterInitiation),
+			}
+		}
+
+		lifecycleRule := awsv1beta1.S3BucketLifecycleRule{
+			ID:                             aws.StringValue(ruleObject.ID),
+			Prefix:                         aws.StringValue(ruleObject.Prefix),
+			Enabled:                        aws.StringValue(ruleObject.Status) == s3.ExpirationStatusEnabled,
+			Transition:                     transition,
+			Expiration:                     expiration,
+			NoncurrentVersionTransition:    noncurrentVersionTransition,
+			NoncurrentVersionExpiration:    noncurrentVersionExpiration,
+			AbortIncompleteMultipartUpload: abortIncompleteMultipartUpload,
+		}
+		lifecycleConfiguration.LifecycleRules = append(lifecycleConfiguration.LifecycleRules, lifecycleRule)
+	}
+	return &lifecycleConfiguration, nil
 }
 
 func (r ReconcileS3Bucket) reconcileBucketCORS(instance *awsv1beta1.S3Bucket) *awsclient.RetryError {
